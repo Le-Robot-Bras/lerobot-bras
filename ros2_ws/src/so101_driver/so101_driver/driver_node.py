@@ -119,6 +119,7 @@ class DriverNode(rclpy.node.Node):
         return robot
 
     def destroy_node(self):
+        """Disconnects the backend (provided). On the real arm this disables the torque."""
         if self._robot.is_connected:
             self._robot.disconnect()
             self.get_logger().info("Robot disconnected.")

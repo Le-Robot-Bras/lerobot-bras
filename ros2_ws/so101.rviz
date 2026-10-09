@@ -108,7 +108,7 @@ Visualization Manager:
       Mass Properties:
         Inertia: false
         Mass: false
-      Name: RobotModel
+      Name: bob
       TF Prefix: ""
       Update Interval: 0
       Value: true
