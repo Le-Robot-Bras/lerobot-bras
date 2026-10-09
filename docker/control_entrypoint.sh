@@ -25,7 +25,10 @@ for i in 0 1 2 3; do
   [ -e /dev/ttyUSB$i ] || mknod /dev/ttyUSB$i c 188 $i 2>/dev/null && chmod 666 /dev/ttyUSB$i 2>/dev/null || true
 done
 
-launch so101_driver driver.launch.py "use_sim:=${USE_SIM:-true}" "port:=${REAL_ROBOT_PORT:-/dev/ttyACM0}"
+driver_args=("use_sim:=${USE_SIM:-true}" "port:=${REAL_ROBOT_PORT:-/dev/ttyACM0}" "enable_torque:=${ARM_TORQUE:-false}")
+# `remote_arm:=` with an empty value is a malformed launch argument: only pass it when set.
+[ -n "${REMOTE_ARM:-}" ] && driver_args+=("remote_arm:=${REMOTE_ARM}")
+launch so101_driver driver.launch.py "${driver_args[@]}"
 launch so101_brain brain.launch.py
 
 shutdown() {

@@ -6,8 +6,9 @@ The only node that talks to the backend: SO101Sim (MuJoCo) or SO101Follower
 knows which one runs.
 
 TODO:
-  - Publish /joint_states in RADIANS (>= 20 Hz)
-  - Subscribe to /joint_command (radians, gripper 0-100 %)
+  - Publish /joint_states in RADIANS (>= 20 Hz) (c'est fait)
+  - Subscribe to /joint_command (radians, gripper 0-100 %) (c'est fait)
+  - Disconnect the backend when the node stops (c'est fait)
 """
 from pathlib import Path
 
@@ -16,6 +17,7 @@ import rclpy.node
 from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 from rclpy.executors import ExternalShutdownException
 from sensor_msgs.msg import JointState
+from so101_driver.remote_arm import DEFAULT_REMOTE_PORT, SO101Remote
 from so101_sim import SO101Sim
 
 JOINT_NAMES = [
@@ -52,8 +54,12 @@ class DriverNode(rclpy.node.Node):
         super().__init__("so101_driver")
         self._use_sim: bool = self.declare_parameter("use_sim", True).value
         port: str = self.declare_parameter("port", DEFAULT_PORT).value
+        # "host:port" of tools/real_arm_server.py (arm plugged on the host, e.g. macOS)
+        self._remote_arm: str = self.declare_parameter("remote_arm", "").value
+        # Remote arm only: turn the motors on at startup (the server must allow motion).
+        self._enable_torque: bool = self.declare_parameter("enable_torque", False).value
         mode = "simulation" if self._use_sim else "hardware"
-        self.get_logger().info(f"Mode: {mode} (port={port})")
+        self.get_logger().info(f"Mode: {mode} (port={port}, remote_arm={self._remote_arm or '-'})")
 
         ##todo ancien
         self._robot = self._connect_arm(port)
@@ -70,11 +76,22 @@ class DriverNode(rclpy.node.Node):
 
         self.get_logger().info("Driver node ready.")
 
-    def _connect_arm(self, port: str = DEFAULT_PORT) -> SO101Sim | SO101Follower:
+    def _connect_arm(self, port: str = DEFAULT_PORT) -> SO101Sim | SO101Follower | SO101Remote:
         """Creates and connects the backend chosen by use_sim (provided)."""
         if self._use_sim:
             robot = SO101Sim()
             robot.connect()
+            return robot
+
+        if self._remote_arm:
+            host, _, remote_port = self._remote_arm.partition(":")
+            robot = SO101Remote(host, int(remote_port or DEFAULT_REMOTE_PORT))
+            robot.connect()
+            if self._enable_torque:
+                robot.enable_torque()
+                self.get_logger().warning("Remote arm: torque ENABLED, the arm will follow /joint_command.")
+            else:
+                self.get_logger().info("Remote arm: torque off, /joint_command is ignored (enable_torque:=true).")
             return robot
 
         if not CALIBRATION_FILE.is_file():

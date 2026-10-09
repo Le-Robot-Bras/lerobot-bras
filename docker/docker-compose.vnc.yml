@@ -1,0 +1,18 @@
+# RViz in the browser (macOS, or any host without usable X11+GL).
+#   docker compose -f docker-compose.yml -f docker-compose.vnc.yml up -d --build
+# Then open http://localhost:6080/vnc.html
+services:
+  rviz-vnc:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.vnc
+    image: tek5/rviz-vnc
+    init: true
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
+      FASTDDS_BUILTIN_TRANSPORTS: LARGE_DATA
+    volumes:
+      - ../ros2_ws:/ros2_ws
+    ports:
+      - "127.0.0.1:6080:6080"
+    networks: [rosnet]

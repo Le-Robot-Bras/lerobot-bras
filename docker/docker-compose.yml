@@ -27,6 +27,8 @@ services:
       <<: *ros-env
       USE_SIM: ${USE_SIM:-true}
       REAL_ROBOT_PORT: ${REAL_ROBOT_PORT:-/dev/ttyACM0}
+      REMOTE_ARM: ${REMOTE_ARM:-}
+      ARM_TORQUE: ${ARM_TORQUE:-false}
       MUJOCO_GL: osmesa
       DISPLAY: ${DISPLAY}
       QT_QPA_PLATFORM: xcb        # robust X11 and XWayland
