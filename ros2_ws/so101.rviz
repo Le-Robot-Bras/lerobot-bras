@@ -157,6 +157,118 @@ Visualization Manager:
                         {}
       Update Interval: 0
       Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Brain (believed cube, targets, state)
+      Namespaces:
+        brain_cube: true
+        brain_state: true
+        brain_targets: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /brain/markers
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Cube and box (perception)
+      Namespaces:
+        box: true
+        perception_cube: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /perception/markers
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Camera
+      Normalize Range: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /external_cam/image_raw
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Perception (fitted models)
+      Normalize Range: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /perception/debug
+      Value: true
+    - Alpha: 1
+      Axes Length: 0.05
+      Axes Radius: 0.005
+      Class: rviz_default_plugins/Pose
+      Color: 255; 25; 0
+      Enabled: true
+      Head Length: 0.02
+      Head Radius: 0.01
+      Name: Cube (perception)
+      Shaft Length: 0.05
+      Shaft Radius: 0.005
+      Shape: Axes
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /object_position
+      Value: true
+    - Alpha: 1
+      Axes Length: 0.08
+      Axes Radius: 0.005
+      Class: rviz_default_plugins/Pose
+      Color: 255; 25; 0
+      Enabled: true
+      Head Length: 0.02
+      Head Radius: 0.01
+      Name: Drop box (perception)
+      Shaft Length: 0.05
+      Shaft Radius: 0.005
+      Shape: Axes
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /drop_box_position
+      Value: true
+    - Alpha: 1
+      Axes Length: 0.04
+      Axes Radius: 0.004
+      Class: rviz_default_plugins/Pose
+      Color: 255; 25; 0
+      Enabled: true
+      Head Length: 0.02
+      Head Radius: 0.01
+      Name: TCP (forward kinematics)
+      Shaft Length: 0.05
+      Shaft Radius: 0.005
+      Shape: Axes
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /end_effector_pose
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -176,25 +288,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 1.0103726387023926
+      Distance: 1.05
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.4289219379425049
-        Y: -0.07958900928497314
-        Z: 0.6167688369750977
+        X: 0.1
+        Y: -0.05
+        Z: 0.15
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.5497963428497314
+      Pitch: 0.6
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 5.156876087188721
+      Yaw: 0.785
     Saved: ~
 Window Geometry:
   Displays:

@@ -19,6 +19,8 @@ setup(
     entry_points={
         "console_scripts": [
             "brain = so101_brain.brain_node:main",
+            "demo_loop = so101_brain.demo_loop:main",
+            "monitor = so101_brain.monitor:main",
         ],
     },
 )

@@ -21,7 +21,9 @@ def generate_launch_description():
         DeclareLaunchArgument("remote_arm", default_value="",
                               description="host:port of tools/real_arm_server.py (arm on the host, e.g. macOS)"),
         DeclareLaunchArgument("enable_torque", default_value="false",
-                              description="Remote arm: enable the motors at startup"),
+                              description="Real arm: enable the motors at startup (else limp, commands ignored)"),
+        DeclareLaunchArgument("camera_device", default_value="",
+                              description="Real robot: OpenCV camera index or /dev/videoN ('' = none)"),
         Node(
             package="so101_driver",
             executable="driver",
@@ -32,6 +34,7 @@ def generate_launch_description():
                 "port": LaunchConfiguration("port"),
                 "remote_arm": LaunchConfiguration("remote_arm"),
                 "enable_torque": ParameterValue(LaunchConfiguration("enable_torque"), value_type=bool),
+                "camera_device": ParameterValue(LaunchConfiguration("camera_device"), value_type=str),
             }],
         ),
     ])

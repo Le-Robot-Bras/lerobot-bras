@@ -1,7 +1,8 @@
 # Launch:
 #   xhost +local:docker            # once per session (X11 access)
 #   cp .env.example .env           # once, then edit it (sim or real arm)
-#   docker compose up -d control viz
+#   docker compose up -d control perception viz
+#   docker compose exec control bash -lc "source /ros2_ws/install/setup.bash && ros2 service call /brain/start std_srvs/srv/Trigger"
 #
 # RViz runs INSIDE the control container (X11 forwarded), so on the internal
 # DDS network - no need for --network host:
@@ -29,6 +30,8 @@ services:
       REAL_ROBOT_PORT: ${REAL_ROBOT_PORT:-/dev/ttyACM0}
       REMOTE_ARM: ${REMOTE_ARM:-}
       ARM_TORQUE: ${ARM_TORQUE:-false}
+      CAMERA_DEVICE: ${CAMERA_DEVICE:-}
+      BRAIN_AUTO_START: ${BRAIN_AUTO_START:-false}
       MUJOCO_GL: osmesa
       DISPLAY: ${DISPLAY}
       QT_QPA_PLATFORM: xcb        # robust X11 and XWayland
@@ -47,6 +50,27 @@ services:
     # Only container that builds (concurrent colcon on the same volume = conflicts).
     # viz waits for install/ to be ready.
     command: ["/opt/so101/entrypoint.sh"]
+
+  # perception_node: HSV + model fit, publishes /object_position and /drop_box_position.
+  # Uses the workspace built by `control` (same volume), so it waits for it.
+  perception:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.perception
+    image: tek5/perception
+    init: true
+    environment:
+      <<: *ros-env
+      CAMERA_CALIBRATION: ${CAMERA_CALIBRATION:+/calibration/camera.json}
+    volumes:
+      - ../ros2_ws:/ros2_ws
+      - ${CAMERA_CALIBRATION:-/dev/null}:/calibration/camera.json:ro
+    networks: [rosnet]
+    command: >
+      bash -lc "source /opt/ros/jazzy/setup.bash &&
+      until [ -f /ros2_ws/install/so101_perception/share/so101_perception/launch/perception.launch.py ]; do echo 'waiting for build (control)...'; sleep 1; done &&
+      cd /ros2_ws && source install/setup.bash &&
+      ros2 launch so101_perception perception.launch.py $${CAMERA_CALIBRATION:+calibration_file:=$$CAMERA_CALIBRATION}"
 
   # robot_state_publisher: publishes /robot_description and the TFs from
   # /joint_states (provided by your driver_node). Visualization is done

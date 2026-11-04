@@ -28,8 +28,9 @@ done
 driver_args=("use_sim:=${USE_SIM:-true}" "port:=${REAL_ROBOT_PORT:-/dev/ttyACM0}" "enable_torque:=${ARM_TORQUE:-false}")
 # `remote_arm:=` with an empty value is a malformed launch argument: only pass it when set.
 [ -n "${REMOTE_ARM:-}" ] && driver_args+=("remote_arm:=${REMOTE_ARM}")
+[ -n "${CAMERA_DEVICE:-}" ] && driver_args+=("camera_device:=${CAMERA_DEVICE}")
 launch so101_driver driver.launch.py "${driver_args[@]}"
-launch so101_brain brain.launch.py
+launch so101_brain brain.launch.py "auto_start:=${BRAIN_AUTO_START:-false}"
 
 shutdown() {
   trap - TERM INT
