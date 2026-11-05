@@ -15,6 +15,10 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("use_sim", default_value="true",
                               description="Simulated backend or real robot"),
+        DeclareLaunchArgument("use_real_camera", default_value="false",
+                              description="Use real physical camera or sim camera"),
+        DeclareLaunchArgument("camera_id", default_value="0",
+                              description="Webcam index (e.g. 0 for /dev/video0)"),
         DeclareLaunchArgument("port", default_value="/dev/ttyACM0",  #  Use the following command to find the robot port:
                               # sudo udevadm monitor --subsystem-match=tty --property | grep --line-buffered -E "(DEVNAME=|ACTION=)"
                               description="Serial port of the real SO-ARM101"),
@@ -29,6 +33,8 @@ def generate_launch_description():
             output="screen",
             parameters=[{
                 "use_sim": ParameterValue(LaunchConfiguration("use_sim"), value_type=bool),
+                "use_real_camera": ParameterValue(LaunchConfiguration("use_real_camera"), value_type=bool),
+                "camera_id": ParameterValue(LaunchConfiguration("camera_id"), value_type=int),
                 "port": LaunchConfiguration("port"),
                 "remote_arm": LaunchConfiguration("remote_arm"),
                 "enable_torque": ParameterValue(LaunchConfiguration("enable_torque"), value_type=bool),

@@ -25,11 +25,27 @@ for i in 0 1 2 3; do
   [ -e /dev/ttyUSB$i ] || mknod /dev/ttyUSB$i c 188 $i 2>/dev/null && chmod 666 /dev/ttyUSB$i 2>/dev/null || true
 done
 
-driver_args=("use_sim:=${USE_SIM:-true}" "port:=${REAL_ROBOT_PORT:-/dev/ttyACM0}" "enable_torque:=${ARM_TORQUE:-false}")
+# Ensure video device nodes exist in /dev for webcam access
+for i in 0 1 2 3; do
+  [ -e /dev/video$i ] || mknod /dev/video$i c 81 $i 2>/dev/null && chmod 666 /dev/video$i 2>/dev/null || true
+done
+
+driver_args=(
+  "use_sim:=${USE_SIM:-true}"
+  "use_real_camera:=${USE_REAL_CAMERA:-false}"
+  "camera_id:=${CAMERA_ID:-0}"
+  "port:=${REAL_ROBOT_PORT:-/dev/ttyACM0}"
+  "enable_torque:=${ARM_TORQUE:-false}"
+)
 # `remote_arm:=` with an empty value is a malformed launch argument: only pass it when set.
 [ -n "${REMOTE_ARM:-}" ] && driver_args+=("remote_arm:=${REMOTE_ARM}")
 launch so101_driver driver.launch.py "${driver_args[@]}"
 launch so101_brain brain.launch.py
+
+if [ -f "install/so101_perception/lib/so101_perception/yolo" ]; then
+  ros2 run so101_perception yolo &
+  pids+=($!)
+fi
 
 shutdown() {
   trap - TERM INT

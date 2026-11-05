@@ -12,6 +12,7 @@ TODO:
 """
 from pathlib import Path
 
+import cv2
 import rclpy
 import rclpy.node
 from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
@@ -19,6 +20,8 @@ from rclpy.executors import ExternalShutdownException
 from sensor_msgs.msg import JointState
 from so101_driver.remote_arm import DEFAULT_REMOTE_PORT, SO101Remote
 from so101_sim import SO101Sim
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image
 
 JOINT_NAMES = [
     "shoulder_pan",
@@ -64,6 +67,28 @@ class DriverNode(rclpy.node.Node):
         ##todo ancien
         self._robot = self._connect_arm(port)
         self.get_logger().info(f"Robot connected: {type(self._robot).__name__}")
+
+        ## camera things
+        self._use_real_camera: bool = self.declare_parameter("use_real_camera", False).value
+        self._camera_id: int = self.declare_parameter("camera_id", 0).value
+        self._bridge = CvBridge()
+        self._pub_image = self.create_publisher(Image, "/external_cam/image_raw", 10)
+        self._cap = None
+        if self._use_real_camera:
+            self._cap = cv2.VideoCapture(self._camera_id)
+            if not self._cap.isOpened():
+                self.get_logger().error(f"Failed to open webcam at index {self._camera_id}")
+            else:
+                self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+                self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                self._cap.set(cv2.CAP_PROP_FPS, 30)
+                self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                self.get_logger().info(f"Physical webcam opened at index {self._camera_id} (MJPG 640x480)")
+        else:
+            self.get_logger().info("Using simulated camera from MuJoCo")
+        self.create_timer(1.0 / 10.0, self._publish_camera_frame)
+        #####
 
         self._target: dict[str, float] = {}
 
@@ -124,6 +149,8 @@ class DriverNode(rclpy.node.Node):
             self._robot.disconnect()
             self.get_logger().info("Robot disconnected.")
         super().destroy_node()
+        if hasattr(self, "_cap") and self._cap is not None and self._cap.isOpened():
+            self._cap.release()
 
     def _cb_joint_command(self, msg: JointState):
         for name, pos in zip(msg.name, msg.position):
@@ -143,6 +170,30 @@ class DriverNode(rclpy.node.Node):
         msg.name = JOINT_NAMES
         msg.position = positions
         self._pub_states.publish(msg)
+
+    def _publish_camera_frame(self):
+        if self._use_real_camera:
+            # Physical camera:
+            if self._cap is None or not self._cap.isOpened():
+                return
+            ret, frame = self._cap.read()
+            if not ret:
+                self.get_logger().warning("Failed to grab frame from webcam", throttle_duration_sec=2.0)
+                return
+
+            # OpenCV reads frames as BGR
+            msg = self._bridge.cv2_to_imgmsg(frame, encoding="bgr8")
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = "camera_optical_frame"
+            self._pub_image.publish(msg)
+        else:
+            # In simulation: MuJoCo provides an RGB image
+            if self._use_sim and hasattr(self._robot, "render_camera"):
+                frame = self._robot.render_camera()
+                msg = self._bridge.cv2_to_imgmsg(frame, encoding="rgb8")
+                msg.header.stamp = self.get_clock().now().to_msg()
+                msg.header.frame_id = "camera_optical_frame"
+                self._pub_image.publish(msg)
 
 
 def main(args=None):

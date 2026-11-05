@@ -27,6 +27,14 @@ COPY sim /opt/so101/sim
 RUN pip install --break-system-packages --no-cache-dir \
     "numpy<2" "opencv-python-headless==4.10.*" /opt/so101/core /opt/so101/sim ikpy
 
+# YOLO (ultralytics)
+RUN pip install --break-system-packages --no-cache-dir \
+    ultralytics "numpy<2" "opencv-python-headless==4.10.*"
+
+# Auto-source ROS 2 in interactive bash shells
+RUN echo "source /opt/ros/jazzy/setup.bash" >> /root/.bashrc && \
+    echo "[ -f /ros2_ws/install/setup.bash ] && source /ros2_ws/install/setup.bash" >> /root/.bashrc
+
 # ROS2 workspace mounted as a volume (see docker-compose.yml)
 WORKDIR /ros2_ws
 

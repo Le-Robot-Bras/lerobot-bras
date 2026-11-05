@@ -26,15 +26,18 @@ services:
     environment:
       <<: *ros-env
       USE_SIM: ${USE_SIM:-true}
+      USE_REAL_CAMERA: ${USE_REAL_CAMERA:-false}
+      CAMERA_ID: ${CAMERA_ID:-0}
       REAL_ROBOT_PORT: ${REAL_ROBOT_PORT:-/dev/ttyACM0}
       REMOTE_ARM: ${REMOTE_ARM:-}
       ARM_TORQUE: ${ARM_TORQUE:-false}
       MUJOCO_GL: osmesa
       DISPLAY: ${DISPLAY}
       QT_QPA_PLATFORM: xcb        # robust X11 and XWayland
-    device_cgroup_rules:  # Grant permissions to access usb serial devices (real arm)
+    device_cgroup_rules:  # Grant permissions to access usb serial devices (real arm) & webcams
       - 'c 166:* rmw'
       - 'c 188:* rmw'
+      - 'c 81:* rmw'
     volumes:
       - ../ros2_ws:/ros2_ws
       - ../sim:/opt/so101/sim

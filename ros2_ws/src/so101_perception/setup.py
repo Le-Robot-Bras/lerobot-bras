@@ -13,10 +13,11 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         ("share/" + package_name + "/launch", glob("launch/*.launch.py")),
     ],
-    entry_points={
+        entry_points={
         "console_scripts": [
             "perception = so101_perception.perception_node:main",
             "calibrate_camera = so101_perception.calibrate_camera:main",
+            "yolo = so101_perception.yolo_node:main",
         ],
     },
 )
