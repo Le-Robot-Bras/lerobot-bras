@@ -51,7 +51,7 @@ services:
     # viz waits for install/ to be ready.
     command: ["/opt/so101/entrypoint.sh"]
 
-  # perception_node: HSV + model fit, publishes /object_position and /drop_box_position.
+  # perception_node: HSV (or YOLO-seg: PERCEPTION_DETECTOR=yolo) + model fit, publishes /object_position and /drop_box_position.
   # Uses the workspace built by `control` (same volume), so it waits for it.
   perception:
     build:
@@ -62,6 +62,7 @@ services:
     environment:
       <<: *ros-env
       CAMERA_CALIBRATION: ${CAMERA_CALIBRATION:+/calibration/camera.json}
+      PERCEPTION_DETECTOR: ${PERCEPTION_DETECTOR:-hsv}
     volumes:
       - ../ros2_ws:/ros2_ws
       - ${CAMERA_CALIBRATION:-/dev/null}:/calibration/camera.json:ro
@@ -70,7 +71,7 @@ services:
       bash -lc "source /opt/ros/jazzy/setup.bash &&
       until [ -f /ros2_ws/install/so101_perception/share/so101_perception/launch/perception.launch.py ]; do echo 'waiting for build (control)...'; sleep 1; done &&
       cd /ros2_ws && source install/setup.bash &&
-      ros2 launch so101_perception perception.launch.py $${CAMERA_CALIBRATION:+calibration_file:=$$CAMERA_CALIBRATION}"
+      ros2 launch so101_perception perception.launch.py detector:=$$PERCEPTION_DETECTOR $${CAMERA_CALIBRATION:+calibration_file:=$$CAMERA_CALIBRATION}"
 
   # robot_state_publisher: publishes /robot_description and the TFs from
   # /joint_states (provided by your driver_node). Visualization is done

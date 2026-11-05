@@ -7,12 +7,17 @@ Frames (URDF, checked against the MuJoCo model):
   - gripper_frame_link ("tcp"): sits on the tip of the FIXED jaw. Local +z is
     the approach axis (out of the jaws), the moving jaw closes along local -x.
 Frames added here, rigidly attached to the TCP:
-  - "grasp": where the centre of the cube must be when the jaws close.
-  - "held": where the centre of the cube ends up once grasped. The printed cube
-    has diamond tunnels: closing pushes it onto the fixed jaw, which slides into
-    a tunnel, so the cube hangs ~4.5 cm from the grasp point. This is very
-    repeatable (form closure) and it is the frame driven to the box for the drop.
-Offsets measured in MuJoCo with tools/eval_pick_place.py.
+  - "grasp": where the centre of the cube must be when the jaws close. It is
+    6 mm under the fixed jaw tip: the fixed jaw goes straight down into the
+    MIDDLE of the vertical diamond tunnel (34 mm diagonal, so about ±13 mm of
+    clearance around the 7 mm finger), 19 mm deep, while the moving jaw stays
+    outside the cube.
+  - "held": where the centre of the cube ends up once grasped. Closing pushes the
+    cube until the diamond vertex hits the fixed jaw: the V self-centres the cube
+    on the finger (form closure). Measured in MuJoCo: the same held pose to
+    ±1 mm for errors of ±10 mm in x and y and ±15 deg in yaw at the grasp.
+    It is the frame driven to the box for the drop.
+Offsets measured in MuJoCo (tools/eval_pick_place.py and grasp sweeps).
 
 IK: damped least squares, position only, position + orientation, or position
 first with the orientation in its null space ("soft"). Joint limits are handled
@@ -31,8 +36,8 @@ JOINT_NAMES = ARM_JOINT_NAMES + [GRIPPER_JOINT]
 TCP_FRAME = "gripper_frame_link"
 
 # In the TCP frame (m).
-DEFAULT_GRASP_OFFSET = (-0.027, 0.0, 0.0)
-DEFAULT_HELD_OFFSET = (0.0185, 0.0, -0.011)
+DEFAULT_GRASP_OFFSET = (0.0, 0.0, 0.006)
+DEFAULT_HELD_OFFSET = (0.019, 0.0, -0.006)
 
 
 def top_down_rotation(yaw: float) -> np.ndarray:

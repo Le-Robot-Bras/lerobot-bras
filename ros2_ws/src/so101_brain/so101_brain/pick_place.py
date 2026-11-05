@@ -13,8 +13,8 @@ Robustness (see the bootstrap slides):
     commits to a target in OBSERVE, from the folded HOME pose where the camera sees
     the whole table (the arm occludes the cube when it is above it).
   - Object moved: during APPROACH a fresh, consistent estimate far from the target re-plans.
-  - Grasp failed: detected by the gripper opening (a good grasp closes fully, the
-    jaw slides into the cube tunnel) and by perception (cube still on the table
+  - Grasp failed: detected by the gripper opening (a good grasp closes fully: the
+    fixed jaw is inside the middle of the cube tunnel, see kinematics.py) and by perception (cube still on the table
     after LIFT). Retried with a small lateral offset, up to max_attempts.
   - Object lost / target unreachable: back to HOME and wait (never moves blindly).
 """
@@ -86,15 +86,15 @@ class PickPlaceConfig:
     # sideways by ~1 cm, AWAY from the side the jaws were offset to. Perception still sees
     # the cube at that moment (score ~0.8): the sign of that shift tells which way to
     # correct the next attempt. Step halves when the sign flips (bisection).
-    adaptive_retry: bool = False        # measured on 80 seeds: 75-76/80, fixed offsets below 77/80
+    adaptive_retry: bool = False        # old edge grasp, 80 seeds: 75-76/80 vs 77/80 with the fixed offsets
     retry_step: float = 0.003           # m, first lateral correction
     retry_min_shift: float = 0.004      # m, perceived shift needed to trust the sign
     retry_halve: bool = True            # halve the step when the sign flips
     retry_unseen_flip: bool = True      # cube not seen after a failure = overshoot
     retry_rotate: bool = False          # retries grasp the other pair of faces (jaws +90 deg); measured worse in sim
-    # m, lateral (along the jaws) offset per attempt. The hook tolerates only ~2-3 mm: start
-    # slightly negative and alternate in small steps. Measured (seeds 0-79, with the vision.py
-    # dilation): 77/80, vs 69/80 for (0, +4, -4, +7).
+    # m, lateral (along the jaws) offset per attempt. Safety net only: since the fixed jaw
+    # enters the middle of the tunnel (±10 mm tolerance), seeds 0-199 all succeed at the
+    # first attempt (the old grasp near the edge of the tunnel needed them: 77/80).
     retry_offsets: tuple = (-0.001, 0.001, -0.003, 0.003)
 
 
@@ -277,7 +277,7 @@ class PickPlace:
 
         elif s == State.GRASP:
             if self._gripper_meas is not None and self._gripper_meas > cfg.grasp_hold_max:
-                self._grasp_failed(now, f"gripper stopped at {self._gripper_meas:.0f}% (cube not hooked)",
+                self._grasp_failed(now, f"gripper stopped at {self._gripper_meas:.0f}% (fixed jaw not in the tunnel)",
                                    learn=True)
                 return
             up = np.array([self._target[0], self._target[1], cfg.lift_height])

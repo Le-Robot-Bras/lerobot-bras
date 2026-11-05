@@ -8,3 +8,7 @@ __pycache__/
 .vscode/
 # pick_place.sh --log
 logs/
+# YOLO: synthetic dataset and training runs (tools/yolo_dataset.py, yolo_train.py)
+datasets/
+runs/
+*.cache

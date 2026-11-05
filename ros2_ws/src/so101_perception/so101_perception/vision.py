@@ -3,7 +3,14 @@
 Used by perception_node and by tools/eval_pick_place.py.
 
 Pipeline for each object:
-  1. HSV threshold -> binary mask (largest blob, holes filled).
+  1. Segmentation -> binary mask (largest blob, holes filled). Two segmenters:
+     - "hsv" (default): colour thresholds. No training, ~1 ms, but fixed colours.
+     - "yolo": YOLO-seg network (YoloSegmenter) trained on synthetic MuJoCo images
+       with randomized lights and colours (tools/yolo_dataset.py + yolo_train.py),
+       then refined at the pixel (refine_mask): the colour of the object is learnt
+       in the current frame inside the YOLO mask. YOLO finds the object whatever the
+       light, the refinement gives back the precision of the thresholds.
+     Steps 2-3 are the same for both: the network only replaces the mask.
   2. First guess: back-project the blob centroid onto the plane z = h/2.
   3. Model fit: the object is a known box (w x d x h) lying on the table. Search
      (x, y, yaw) so that the projection of its 8 corners (convex hull, clipped
@@ -29,6 +36,10 @@ CUBE_HSV_RANGES = (((155, 100, 50), (180, 255, 255)), ((0, 190, 50), (8, 255, 25
 # Measured in sim: cube error 2.1 -> 0.8 mm mean, 5.3 -> 1.7 mm max. Not for the box
 # (thin walls, its error gets worse).
 CUBE_DILATE_PX = 1
+# YOLO + refine_mask: same 1 px shrink as the thresholds (colour classification at the
+# anti-aliased edges). Measured in sim (40 scenes): 0.9 mm mean / 2.3 mm max, 2.5 deg;
+# at 20 % light 0.8 / 1.7 mm (HSV: cube lost). Raw YOLO masks: 2.8 / 8.2 mm, 6 deg.
+YOLO_CUBE_DILATE_PX = 1
 # Brown drop box.
 BOX_HSV_RANGES = (((5, 80, 25), (25, 230, 220)),)
 
@@ -171,10 +182,71 @@ class BoxFitter:
         return p[0], p[1], float(np.mod(p[2], self.symmetry)), score
 
 
+def refine_mask(bgr, mask, ring: int = 4) -> np.ndarray:
+    """Pixel-accurate silhouette from a coarse mask (YOLO protos are 1/4 resolution).
+
+    Two colour models learnt in THIS frame (Lab, mean and std): the object = the eroded
+    coarse mask, the background = a ring around it. Each pixel near the mask goes to
+    the closest model (normalised distance). Works under any light, since the colours
+    are measured, not fixed in advance."""
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+    core = cv2.erode(mask, np.ones((3, 3), np.uint8)) > 0
+    zone = cv2.dilate(mask, np.ones((2 * ring + 1, 2 * ring + 1), np.uint8)) > 0
+    bg = zone & ~(cv2.dilate(mask, np.ones((5, 5), np.uint8)) > 0)
+    if core.sum() < 10 or bg.sum() < 10:
+        return mask
+    d = []
+    for sel in (core, bg):
+        mean, std = lab[sel].mean(0), lab[sel].std(0) + 3.0
+        d.append((((lab - mean) / std) ** 2).sum(-1))
+    refined = ((d[0] < d[1]) & zone).astype(np.uint8) * 255
+    _, filled = largest_blob(refined)
+    return mask if filled is None else filled
+
+
+class YoloSegmenter:
+    """Masks of the cube and the drop box from a YOLO segmentation model (ultralytics).
+
+    One forward pass per image for both classes; keeps the most confident instance of
+    each class. Masks are rebuilt from the predicted polygons at the image resolution."""
+
+    CLASSES = ("cube", "drop_box")
+
+    def __init__(self, weights, conf: float = 0.25, device=None, refine: bool = True):
+        from ultralytics import YOLO  # optional dependency (AGPL-3.0), only for "yolo"
+        self.model = YOLO(str(weights), task="segment")
+        self.conf = conf
+        self.device = device
+        self.refine = refine
+        self._cache = (None, None)
+
+    def masks(self, bgr) -> dict:
+        """{class name: uint8 mask (0/255)} for the classes found in the image."""
+        if self._cache[0] is bgr:  # detect_cube + detect_drop_box on the same frame
+            return self._cache[1]
+        res = self.model.predict(bgr, imgsz=max(bgr.shape[:2]), conf=self.conf, device=self.device,
+                                 verbose=False)[0]
+        out, best = {}, {}
+        if res.masks is not None:
+            for poly, cls, conf in zip(res.masks.xy, res.boxes.cls.tolist(), res.boxes.conf.tolist()):
+                name = self.CLASSES[int(cls)] if int(cls) < len(self.CLASSES) else None
+                if name is None or len(poly) < 3 or conf <= best.get(name, 0.0):
+                    continue
+                mask = np.zeros(bgr.shape[:2], np.uint8)
+                cv2.fillPoly(mask, [np.round(poly).astype(np.int32)], 255)
+                out[name], best[name] = mask, conf
+        if self.refine:
+            out = {name: refine_mask(bgr, mask) for name, mask in out.items()}
+        self._cache = (bgr, out)
+        return out
+
+
 def detect_box_object(bgr, camera: Camera, ranges, size, z0=0.0, min_area=MIN_BLOB_AREA_PX,
-                      dilate_px: int = 0):
-    """Detect a box-shaped object of known size. Returns Detection or None, and the mask."""
-    mask = hsv_mask(bgr, ranges)
+                      dilate_px: int = 0, mask=None):
+    """Detect a box-shaped object of known size. Returns Detection or None, and the mask.
+    `mask`: segmentation given by another segmenter (YOLO); default: HSV thresholds."""
+    if mask is None:
+        mask = hsv_mask(bgr, ranges)
     if dilate_px > 0:
         k = 2 * dilate_px + 1  # symmetric kernel: a 2x2 kernel would shift the silhouette
         mask = cv2.dilate(mask, np.ones((k, k), np.uint8))
@@ -194,9 +266,17 @@ def detect_box_object(bgr, camera: Camera, ranges, size, z0=0.0, min_area=MIN_BL
     return det, filled
 
 
-def detect_cube(bgr, camera: Camera):
-    return detect_box_object(bgr, camera, CUBE_HSV_RANGES, CUBE_SIZE, dilate_px=CUBE_DILATE_PX)
+def _segmented(bgr, segmenter, name):
+    if segmenter is None:
+        return None
+    return segmenter.masks(bgr).get(name, np.zeros(bgr.shape[:2], np.uint8))
 
 
-def detect_drop_box(bgr, camera: Camera):
-    return detect_box_object(bgr, camera, BOX_HSV_RANGES, BOX_SIZE)
+def detect_cube(bgr, camera: Camera, segmenter: YoloSegmenter | None = None):
+    mask = _segmented(bgr, segmenter, "cube")
+    dilate = CUBE_DILATE_PX if segmenter is None else YOLO_CUBE_DILATE_PX
+    return detect_box_object(bgr, camera, CUBE_HSV_RANGES, CUBE_SIZE, dilate_px=dilate, mask=mask)
+
+
+def detect_drop_box(bgr, camera: Camera, segmenter: YoloSegmenter | None = None):
+    return detect_box_object(bgr, camera, BOX_HSV_RANGES, BOX_SIZE, mask=_segmented(bgr, segmenter, "drop_box"))

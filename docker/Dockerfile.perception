@@ -15,10 +15,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # numpy<2: cv_bridge (apt) is built against numpy 1.x
 RUN pip install --break-system-packages --no-cache-dir "numpy<2" "opencv-python-headless==4.10.*"
 
-# To extend this image:
-# FROM tek5/perception
-# RUN pip install --break-system-packages --no-cache-dir \
-#    ultralytics "numpy<2" "opencv-python==4.10.*"
+# YOLO-seg (detector:=yolo): ultralytics on a CPU-only PyTorch (no CUDA wheels).
+# ultralytics pulls opencv-python (needs libGL): headless is reinstalled on top of it.
+# Without YOLO (smaller image, HSV only): docker compose build --build-arg WITH_YOLO=0 perception
+ARG WITH_YOLO=1
+RUN if [ "$WITH_YOLO" = 1 ]; then \
+      pip install --break-system-packages --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+        torch torchvision && \
+      pip install --break-system-packages --no-cache-dir ultralytics "numpy<2" && \
+      pip install --break-system-packages --no-cache-dir --force-reinstall --no-deps \
+        "opencv-python-headless==4.10.*"; \
+    fi
 
 WORKDIR /ros2_ws
 CMD ["bash", "-lc", "source /opt/ros/jazzy/setup.bash && bash"]

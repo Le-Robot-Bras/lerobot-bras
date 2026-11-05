@@ -50,7 +50,7 @@ docker compose exec control bash -lc "source /ros2_ws/install/setup.bash && ros2
 | Node | Role |
 |---|---|
 | `so101_driver` | backend (sim / real / remote), `/joint_states` 30 Hz, `/joint_command` (clamped, partial OK), `/external_cam/image_raw` + `camera_info` 10 Hz |
-| `so101_perception` | HSV mask + fit of a known-size box model → `/object_position`, `/drop_box_position` (position + yaw), `/perception/mask`, `/perception/debug` |
+| `so101_perception` | mask (HSV thresholds, or YOLO-seg with `--yolo`) + fit of a known-size box model → `/object_position`, `/drop_box_position` (position + yaw), `/perception/mask`, `/perception/debug` |
 | `so101_brain` | IK (pinocchio, `kinematics.py`) + state machine (`pick_place.py`), `/brain/start`, `/brain/stop`, `/brain_state`, `/go_to_target`, `/end_effector_pose` |
 
 State machine: `IDLE → HOME → OBSERVE → APPROACH → DESCEND → GRASP → LIFT → TRANSPORT → RELEASE → RETREAT → DONE`,
@@ -63,7 +63,33 @@ python3 tools/eval_pick_place.py --episodes 20        # success rate
 python3 tools/eval_pick_place.py --ik-test 50         # IK error measured in MuJoCo (S4: < 1 cm)
 python3 tools/eval_pick_place.py --perception-test 30 # perception error
 python3 tools/eval_pick_place.py --episodes 1 --video run.mp4
+python3 tools/eval_pick_place.py --perception-test 40 --detector yolo --lighting 0.2   # YOLO, dim light
 ```
+
+### Perception with YOLO-seg (optional)
+
+`./docker/pick_place.sh --yolo` (or `PERCEPTION_DETECTOR=yolo` in `docker/.env`) replaces the HSV
+thresholds by a YOLO26n-seg network; the 3D model fit is unchanged. The network is trained on
+synthetic images of the sim camera, labelled for free by MuJoCo's segmentation rendering, with
+randomized lights, colours, arm poses and box position. Its coarse masks are refined at the
+pixel by a colour model learnt in the current frame inside the YOLO mask (`vision.refine_mask`).
+
+| Measured in sim | HSV | YOLO + refine |
+|---|---|---|
+| cube error, nominal light (40 scenes) | 0.8 mm / 2.2° | 0.9 mm / 2.5° |
+| cube detected, 15 % light | 1 / 40 | 40 / 40 (0.8 mm) |
+| pick & place, nominal light | 200 / 200 | 80 / 80 |
+| pick & place, 20 % light | 0 / 40 | 40 / 40 |
+| cost per image (cube + box) | ~10 ms | ~40 ms (Docker CPU: ~7 Hz) |
+
+```bash
+python3 tools/yolo_dataset.py --out datasets/so101_seg --images 6000   # images + exact labels
+python3 tools/yolo_train.py --data datasets/so101_seg/data.yaml        # -> so101_perception/models/so101_seg.pt
+python3 tools/yolo_live.py --run runs/yolo/so101_seg --data datasets/so101_seg   # live view, http://localhost:8008
+```
+Needs `ultralytics` (AGPL-3.0); the perception image installs it with a CPU-only PyTorch
+(`--build-arg WITH_YOLO=0` to skip). Trained on sim images only: for the real camera, add real
+labelled frames (or fine-tune) before trusting it.
 
 ### Demo
 

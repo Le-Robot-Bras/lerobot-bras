@@ -8,6 +8,8 @@
 #   ./docker/pick_place.sh --log               # live log: brain state, TCP, gripper, perception
 #                                              # (also saved in logs/pick_place_<date>.log)
 #   ./docker/pick_place.sh --vnc               # force RViz in the browser (noVNC) instead of X11
+#   ./docker/pick_place.sh --yolo              # perception masks from the YOLO-seg network
+#   ./docker/pick_place.sh --hsv               # back to the HSV colour thresholds (default)
 #   ./docker/pick_place.sh --down              # stop the project (Docker keeps running)
 #   ./docker/pick_place.sh --stop              # stop the project, and quit Docker Desktop (macOS/Windows)
 #   ./docker/pick_place.sh --info              # show the detected platform / RViz mode, start nothing
@@ -28,13 +30,16 @@ ROS='source /opt/ros/jazzy/setup.bash && source /ros2_ws/install/setup.bash'
 RVIZ_URL="http://localhost:6080/vnc.html?autoconnect=true&resize=scale"
 UP_LOG="${TMPDIR:-/tmp}/pick_place_up.log"
 MODE=""; REPEAT=1; LOG=0; SAME=0; FORCE_VNC=0
-usage() { sed -n '2,21p' "$SCRIPT"; exit 2; }
+DETECTOR=""   # --yolo / --hsv: (re)start the perception with that segmenter
+usage() { sed -n '2,23p' "$SCRIPT"; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --stop|--down|--info) MODE="$1" ;;
     --same) SAME=1 ;;
     --log) LOG=1 ;;
     --vnc) FORCE_VNC=1 ;;
+    --yolo) DETECTOR=yolo ;;
+    --hsv) DETECTOR=hsv ;;
     --repeat) shift; [[ "${1:-}" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] || usage; REPEAT="$1" ;;
     -h|--help) usage ;;
     *) echo "unknown option: $1"; usage ;;
@@ -175,9 +180,31 @@ stack_running() {
   [ "$n" -eq "${#SERVICES[@]}" ]
 }
 
+perception_detector() {  # segmenter of the running perception container
+  "${COMPOSE[@]}" exec -T perception printenv PERCEPTION_DETECTOR 2>/dev/null </dev/null | tr -d '\r'
+}
+
+ensure_yolo_image() {  # the YOLO layer (PyTorch CPU + ultralytics) is built once
+  docker image inspect tek5/perception >/dev/null 2>&1 \
+    && docker run --rm --entrypoint python3 tek5/perception -c "import ultralytics" >/dev/null 2>&1 \
+    && return 0
+  log "Building the perception image with YOLO (once, several minutes)..."
+  "${COMPOSE[@]}" build perception >"$UP_LOG" 2>&1 || { tail -20 "$UP_LOG"; die "perception build failed."; }
+}
+
 stack_up() {
+  if [ -n "$DETECTOR" ]; then
+    export PERCEPTION_DETECTOR="$DETECTOR"
+    [ "$DETECTOR" = yolo ] && ensure_yolo_image
+  fi
   if stack_running; then
     log "Project already running."
+    if [ -n "$DETECTOR" ] && [ "$(perception_detector)" != "$DETECTOR" ]; then
+      log "Restarting the perception with the $DETECTOR segmenter..."
+      "${COMPOSE[@]}" up -d --force-recreate --no-deps perception >"$UP_LOG" 2>&1 \
+        || { cat "$UP_LOG"; die "could not restart the perception."; }
+      sleep 5
+    fi
     return 0
   fi
   log "Starting the project (${SERVICES[*]})..."
@@ -211,6 +238,10 @@ wait_brain() {
 }
 
 ros() { "${COMPOSE[@]}" exec -T control bash -lc "$ROS && $*" </dev/null; }
+# Service call with a deadline: across containers, DDS sometimes loses the reply
+# ("failed to send response (timeout)" in the brain log) and `ros2 service call` would wait forever.
+call() { ros "timeout 15 ros2 service call $1 std_srvs/srv/Trigger"; }
+brain_state() { ros "timeout 3 ros2 topic echo --once --field data /brain_state 2>/dev/null | grep -v WARNING | head -1" 2>/dev/null; }
 
 # ------------------------------------------------------------------------- RViz
 
@@ -272,18 +303,24 @@ trap stop_logging EXIT
 run_once() {  # $1 = run index. Sets RUN_OK (0/1), RUN_TIME (s), RUN_ATTEMPTS
   local i=$1 t0 last="" state attempts=1
   RUN_OK=0; RUN_ATTEMPTS=1
-  ros "ros2 service call /brain/stop std_srvs/srv/Trigger" >/dev/null 2>&1  # previous run still waiting?
+  call /brain/stop >/dev/null 2>&1  # previous run still waiting?
   if [ "$SAME" -eq 0 ]; then
-    ros "ros2 service call /sim/reset_object std_srvs/srv/Trigger" >/dev/null 2>&1 \
+    call /sim/reset_object >/dev/null 2>&1 \
       && log "run $i/$REPEAT: new random cube position" || log "(no /sim/reset_object: real robot?)"
   fi
   sleep 3  # let the perception see the scene
-  ros "ros2 service call /brain/start std_srvs/srv/Trigger" 2>/dev/null | grep "success=True" >/dev/null \
-    || die "/brain/start refused (see: docker compose -f docker/docker-compose.yml logs control)"
+  if ! call /brain/start 2>/dev/null | grep "success=True" >/dev/null; then
+    # No reply: the request may still have reached the brain. Trust its state.
+    sleep 2
+    case "$(brain_state)" in
+      ""|IDLE*|DONE*) die "/brain/start refused (see: docker compose -f docker/docker-compose.yml logs control)" ;;
+      *) log "(no reply from /brain/start, but the brain is running)" ;;
+    esac
+  fi
   log "run $i/$REPEAT: pick & place started"
   t0=$(date +%s)
   while [ $(( $(date +%s) - t0 )) -lt 180 ]; do
-    state=$(ros "timeout 3 ros2 topic echo --once --field data /brain_state 2>/dev/null | grep -v WARNING | head -1" 2>/dev/null)
+    state=$(brain_state)
     if [[ "$state" =~ attempt\ ([0-9]+) ]] && [ "${BASH_REMATCH[1]}" -gt "$attempts" ]; then
       attempts=${BASH_REMATCH[1]}
     fi
@@ -302,7 +339,7 @@ run_once() {  # $1 = run index. Sets RUN_OK (0/1), RUN_TIME (s), RUN_ATTEMPTS
   if [ "$RUN_OK" -eq 1 ]; then
     log "run $i/$REPEAT: SUCCESS in ${RUN_TIME}s"
   else
-    ros "ros2 service call /brain/stop std_srvs/srv/Trigger" >/dev/null 2>&1
+    call /brain/stop >/dev/null 2>&1
     log "run $i/$REPEAT: FAILED after ${RUN_TIME}s (last state: ${last:-none})"
   fi
 }

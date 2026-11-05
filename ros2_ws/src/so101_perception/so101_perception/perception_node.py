@@ -8,7 +8,7 @@ Publishes:   /object_position, /drop_box_position  (geometry_msgs/PoseStamped, 1
              /perception/debug (sensor_msgs/Image bgr8: image + fitted models)
              /perception/markers (visualization_msgs/MarkerArray: 3D cube and box for RViz)
 
-Method (see vision.py): HSV mask, then fit of a box of known size lying on the
+Method (see vision.py): mask (HSV thresholds, or YOLO-seg with detector:=yolo), then fit of a box of known size lying on the
 table so that its projection matches the silhouette -> position + yaw, robust
 to perspective and to the image border. A detection whose fit score is low
 (object hidden by the arm...) is not published: the brain keeps its last value.
@@ -51,6 +51,29 @@ def _valid_K(K):
 
 
 class PerceptionNode(rclpy.node.Node):
+    def _make_segmenter(self, detector, weights):
+        """None = HSV thresholds. "yolo": YOLO-seg; falls back to HSV if it cannot load."""
+        if detector == "hsv":
+            self.get_logger().info("Segmentation: HSV thresholds")
+            return None
+        if detector != "yolo":
+            raise ValueError("detector must be 'hsv' or 'yolo'")
+        if not weights:
+            # installed copy (colcon), else the source tree (weights added after the last build)
+            from pathlib import Path
+
+            from ament_index_python.packages import get_package_share_directory
+            share = Path(get_package_share_directory("so101_perception"))
+            candidates = [share / "models/so101_seg.pt", Path("/ros2_ws/src/so101_perception/models/so101_seg.pt")]
+            weights = str(next((c for c in candidates if c.exists()), candidates[0]))
+        try:
+            seg = vision.YoloSegmenter(weights, device="cpu")
+        except Exception as exc:  # ultralytics missing, bad weights...
+            self.get_logger().error(f"YOLO unavailable ({exc}): falling back to HSV thresholds")
+            return None
+        self.get_logger().info(f"Segmentation: YOLO-seg ({weights})")
+        return seg
+
     def __init__(self):
         super().__init__("so101_perception")
         self.bridge = CvBridge()
@@ -60,6 +83,9 @@ class PerceptionNode(rclpy.node.Node):
         self._period = 1.0 / publish_hz
         self._min_score = float(self.declare_parameter("min_score", vision.MIN_SCORE).value)
         self._frame = self.declare_parameter("output_frame", "base_link").value
+        self._segmenter = self._make_segmenter(
+            self.declare_parameter("detector", "hsv").value,
+            self.declare_parameter("yolo_weights", "").value)
 
         self._K = None          # intrinsics
         self._D = None
@@ -167,8 +193,8 @@ class PerceptionNode(rclpy.node.Node):
             return
         self._last_publish = now
 
-        cube, cube_mask = vision.detect_cube(image, self._camera)
-        box, box_mask = vision.detect_drop_box(image, self._camera)
+        cube, cube_mask = vision.detect_cube(image, self._camera, self._segmenter)
+        box, box_mask = vision.detect_drop_box(image, self._camera, self._segmenter)
         markers = MarkerArray()
         for det, pub, kind in ((cube, self._pub_object, "cube"), (box, self._pub_box, "box")):
             if det is not None and det.score >= self._min_score and np.all(np.isfinite(det.position)):

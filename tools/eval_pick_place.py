@@ -15,6 +15,9 @@ so101_brain.kinematics) against SO101Sim, with the same rates as the ROS nodes
         # episodes in one H.264 video, orbiting 3D view, camera + detection insets, banner
     python3 tools/eval_pick_place.py --episodes 20 --oracle  # ground-truth positions instead
         # of perception: tells perception errors from control errors (debug only)
+    python3 tools/eval_pick_place.py --perception-test 50 --detector yolo   # YOLO-seg masks
+    python3 tools/eval_pick_place.py --perception-test 50 --lighting 0.4    # dimmed lights
+        # --lighting: a light gain (0.4 = 40 %) or "random" (lights + colours, as the dataset)
 
 Needs mujoco, pinocchio (pip: pin), opencv, numpy.
 """
@@ -41,6 +44,23 @@ from so101_perception import vision  # noqa: E402
 
 SCENE = ROOT / "sim/so101_sim/assets/so101/scene_tek5.xml"
 URDF = ROOT / "ros2_ws/src/so101_description/urdf/so101.urdf"
+YOLO_WEIGHTS = ROOT / "ros2_ws/src/so101_perception/models/so101_seg.pt"
+SEGMENTER = None   # vision.YoloSegmenter with --detector yolo, None = HSV
+LIGHTING = None    # --lighting
+
+
+def set_lighting(sim, seed):
+    """Applies --lighting to the scene (no-op by default)."""
+    if LIGHTING is None:
+        return
+    from yolo_dataset import Appearance
+    look = getattr(sim, "_appearance", None) or Appearance(sim)
+    sim._appearance = look
+    rng = np.random.default_rng(10_000 + seed)
+    if LIGHTING == "random":
+        look.randomize(rng)
+    else:
+        look.randomize(rng, gain=float(LIGHTING), tint=0.0, colour=0.0)
 BRAIN_DT = 0.05          # 20 Hz
 PERCEPTION_EVERY = 2     # 10 Hz
 
@@ -79,6 +99,7 @@ def run_episode(seed, max_time=60.0, verbose=False, video=None, oracle=False, re
         sim.connect()
     else:
         reset_sim(sim, seed)
+    set_lighting(sim, seed)
     cam = camera_of(sim)
     kin = ArmKinematics(URDF, seed=seed)
     logs = []
@@ -108,12 +129,12 @@ def run_episode(seed, max_time=60.0, verbose=False, video=None, oracle=False, re
         now = tick * BRAIN_DT
         if tick % PERCEPTION_EVERY == 0:
             img = np.ascontiguousarray(sim.render_camera()[:, :, ::-1])
-            det, mask = vision.detect_cube(img, cam)
+            det, mask = vision.detect_cube(img, cam, SEGMENTER)
             if oracle:
                 brain.update_object(Observation(sim.get_object_position(), cube_yaw(sim), now))
             elif det is not None and det.score >= vision.MIN_SCORE:
                 brain.update_object(Observation(det.position, det.yaw, now))
-            box, _ = vision.detect_drop_box(img, cam)
+            box, _ = vision.detect_drop_box(img, cam, SEGMENTER)
             if box is not None and box.score >= vision.MIN_SCORE:
                 brain.update_box(Observation(box.position, box.yaw, now))
             if writer is not None:
@@ -275,23 +296,36 @@ def ik_test(n, seed=0):
 
 def perception_test(n):
     home = {f"{k}.pos": v for k, v in PickPlaceConfig().home.items()}
-    pe, ye = [], []
+    pe, ye, be, t = [], [], [], []
     for seed in range(n):
         sim = SO101Sim(scene_path=SCENE, seed=seed)
         sim.connect()
+        set_lighting(sim, seed)
         for _ in range(150):
             sim.send_action(home)
         img = np.ascontiguousarray(sim.render_camera()[:, :, ::-1])
-        det, _ = vision.detect_cube(img, camera_of(sim))
-        if det is None:
-            print(f"  seed {seed}: cube not detected")
+        t0 = time.perf_counter()
+        det, _ = vision.detect_cube(img, camera_of(sim), SEGMENTER)
+        box, _ = vision.detect_drop_box(img, camera_of(sim), SEGMENTER)
+        t.append(time.perf_counter() - t0)
+        if box is not None and box.score >= vision.MIN_SCORE:
+            be.append(np.linalg.norm((box.position - sim.get_drop_box_position())[:2]) * 1000)
+        if det is None or det.score < vision.MIN_SCORE:
+            print(f"  seed {seed}: cube not detected" + ("" if det is None else f" (score {det.score:.2f})"))
             continue
         err = np.linalg.norm((det.position - sim.get_object_position())[:2]) * 1000
         dy = (det.yaw - cube_yaw(sim) + np.pi / 4) % (np.pi / 2) - np.pi / 4
         pe.append(err)
         ye.append(abs(np.degrees(dy)))
-    print(f"Perception test ({len(pe)}/{n} detected): position error mean {np.mean(pe):.1f} mm, "
-          f"max {np.max(pe):.1f} mm; yaw error mean {np.mean(ye):.1f} deg, max {np.max(ye):.1f} deg")
+    name = "yolo" if SEGMENTER is not None else "hsv"
+    if not pe:
+        print(f"Perception test [{name}, lighting {LIGHTING or 'nominal'}]: cube detected 0/{n}")
+        return
+    print(f"Perception test [{name}, lighting {LIGHTING or 'nominal'}]: cube detected {len(pe)}/{n}, "
+          f"position error mean {np.mean(pe):.1f} mm, max {np.max(pe):.1f} mm; yaw error mean "
+          f"{np.mean(ye):.1f} deg, max {np.max(ye):.1f} deg; box detected {len(be)}/{n}"
+          + (f", error mean {np.mean(be):.1f} mm" if be else "")
+          + f"; {np.median(t) * 1000:.0f} ms/image (cube + box)")
 
 
 def main():
@@ -304,8 +338,15 @@ def main():
     parser.add_argument("--demo-video", help="polished H.264 demo of all the episodes in one file")
     parser.add_argument("--seeds", help="comma-separated seeds instead of --first-seed/--episodes")
     parser.add_argument("--oracle", action="store_true", help="ground-truth cube pose instead of perception")
+    parser.add_argument("--detector", choices=("hsv", "yolo"), default="hsv", help="segmenter of the perception")
+    parser.add_argument("--weights", default=str(YOLO_WEIGHTS), help="YOLO-seg weights (--detector yolo)")
+    parser.add_argument("--lighting", help='light gain (e.g. 0.4) or "random": robustness tests')
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
+    global SEGMENTER, LIGHTING
+    LIGHTING = args.lighting
+    if args.detector == "yolo":
+        SEGMENTER = vision.YoloSegmenter(args.weights, device="cpu")
     if not (args.episodes or args.seeds or args.ik_test or args.perception_test):
         args.episodes = 10
 
