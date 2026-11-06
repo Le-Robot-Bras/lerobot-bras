@@ -38,6 +38,9 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 from so101_perception import vision
 
+# Drawn by RViz, which resolves it in the so101_description package.
+CUBE_MESH = "package://so101_description/meshes/hollow_cube_rhombus_50mm.stl"
+
 
 def _valid_transform(T):
     R = T[:3, :3]
@@ -223,7 +226,7 @@ class PerceptionNode(rclpy.node.Node):
         return msg
 
     def _markers(self, kind, pose: PoseStamped):
-        """RViz markers at the detected pose: a red 5 cm cube, or the open brown box
+        """RViz markers at the detected pose: the red 5 cm cube (its mesh), or the open brown box
         (bottom + 4 walls). The perceived cube is semi-transparent and lives 1 s (raw
         detection; the brain draws the cube it believes in, e.g. in the gripper); the
         box stays at its last detection."""
@@ -253,6 +256,11 @@ class PerceptionNode(rclpy.node.Node):
             m.pose.position.z = pose.pose.position.z + oz
             m.pose.orientation = q
             m.scale.x, m.scale.y, m.scale.z = scale
+            if kind == "cube":
+                # the printed cube's mesh (mm, origin at the centre of the bottom face)
+                m.type, m.mesh_resource = Marker.MESH_RESOURCE, CUBE_MESH
+                m.pose.position.z -= h / 2
+                m.scale.x = m.scale.y = m.scale.z = 0.001
             m.color.r, m.color.g, m.color.b, m.color.a = color
             m.lifetime.sec = lifetime
             out.append(m)

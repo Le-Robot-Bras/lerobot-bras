@@ -42,6 +42,10 @@ GRIPPER_RANGE_RAD = (-0.174533, 1.74533)   # URDF gripper joint, 0 % .. 100 %
 LOOP_HZ = 20.0
 MARKER_EVERY = 2        # markers at 10 Hz
 CUBE_SIZE = 0.05
+# Same mesh and colour as the MuJoCo cube (hollow, diamond windows). The STL is in mm,
+# origin at the centre of its bottom face: drawn half a cube lower than the centre.
+CUBE_MESH = "package://so101_description/meshes/hollow_cube_rhombus_50mm.stl"
+CUBE_RGB = (0.80, 0.05, 0.22)
 STATE_COLORS = {        # text colour per phase (r, g, b)
     "IDLE": (0.8, 0.8, 0.8), "DONE": (0.2, 1.0, 0.3), "RETRY": (1.0, 0.5, 0.1),
 }
@@ -197,8 +201,11 @@ class BrainNode(rclpy.node.Node):
         where, pos = self._pp.belief()
         if pos is not None:
             alpha = 1.0 if where in ("held", "placed") else 0.9
-            markers.markers.append(self._marker("brain_cube", 0, Marker.CUBE, pos, (CUBE_SIZE,) * 3,
-                                                (0.85, 0.05, 0.2, alpha), self._pp.cube_yaw()))
+            cube = self._marker("brain_cube", 0, Marker.MESH_RESOURCE,
+                                np.asarray(pos) - [0.0, 0.0, CUBE_SIZE / 2], (0.001,) * 3,
+                                (*CUBE_RGB, alpha), self._pp.cube_yaw())
+            cube.mesh_resource = CUBE_MESH
+            markers.markers.append(cube)
             # No spaces: RViz (software rendering in noVNC) draws them very wide.
             label = {"table": "cube:seen", "held": "cube:held", "placed": "cube:placed"}[where]
             markers.markers.append(self._marker("brain_cube", 1, Marker.TEXT_VIEW_FACING,
