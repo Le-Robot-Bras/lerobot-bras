@@ -75,9 +75,17 @@ class DriverNode(rclpy.node.Node):
         self._pub_image = self.create_publisher(Image, "/external_cam/image_raw", 10)
         self._cap = None
         if self._use_real_camera:
-            self._cap = cv2.VideoCapture(self._camera_id)
-            if not self._cap.isOpened():
-                self.get_logger().error(f"Failed to open webcam at index {self._camera_id}")
+            candidate_ids = [self._camera_id] + [i for i in (0, 1, 2, 3) if i != self._camera_id]
+            for cid in candidate_ids:
+                cap = cv2.VideoCapture(cid)
+                if cap.isOpened():
+                    self._cap = cap
+                    self._camera_id = cid
+                    break
+                cap.release()
+
+            if self._cap is None or not self._cap.isOpened():
+                self.get_logger().error(f"Failed to open any webcam (tried indices: {candidate_ids})")
             else:
                 self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
                 self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)

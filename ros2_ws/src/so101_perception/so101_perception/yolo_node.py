@@ -21,8 +21,8 @@ class YoloNode(Node):
             Image, "/external_cam/image_raw", self.image_callback, 10
         )
 
-        # Publish the image with bounding boxes drawn on it
-        self.pub = self.create_publisher(Image, "/yolo/image_annotated", 10)
+        # Publish the image with YOLO bounding boxes so hand_node can draw fingers on top
+        self.pub = self.create_publisher(Image, "/yolo/image_boxes", 10)
 
     def image_callback(self, msg: Image):
         # 1. ROS Image -> OpenCV BGR frame

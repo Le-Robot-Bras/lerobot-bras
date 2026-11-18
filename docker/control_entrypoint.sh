@@ -47,6 +47,11 @@ if [ -f "install/so101_perception/lib/so101_perception/yolo" ]; then
   pids+=($!)
 fi
 
+if [ -f "install/so101_perception/lib/so101_perception/hand" ]; then
+  ros2 run so101_perception hand &
+  pids+=($!)
+fi
+
 shutdown() {
   trap - TERM INT
   set +e  # wait returns the child status; errexit would abort the shutdown

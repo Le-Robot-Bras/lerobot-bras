@@ -18,6 +18,8 @@ setup(
             "perception = so101_perception.perception_node:main",
             "calibrate_camera = so101_perception.calibrate_camera:main",
             "yolo = so101_perception.yolo_node:main",
+            "hand = so101_perception.hand_node:main",
+            "hand_debug = so101_perception.hand_debug_node:main",
         ],
     },
 )

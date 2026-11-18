@@ -27,13 +27,22 @@ COPY sim /opt/so101/sim
 RUN pip install --break-system-packages --no-cache-dir \
     "numpy<2" "opencv-python-headless==4.10.*" /opt/so101/core /opt/so101/sim ikpy
 
-# YOLO (ultralytics)
-RUN pip install --break-system-packages --no-cache-dir \
-    ultralytics "numpy<2" "opencv-python-headless==4.10.*"
+# YOLO (ultralytics) + MediaPipe
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-0 \
+    libegl1 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Auto-source ROS 2 in interactive bash shells
+RUN pip install --break-system-packages --no-cache-dir \
+    ultralytics mediapipe "numpy<2" && \
+    pip uninstall -y --break-system-packages opencv-contrib-python opencv-python || true && \
+    pip install --break-system-packages --no-cache-dir --force-reinstall --no-deps "opencv-python-headless==4.10.*"
+
+# Auto-source ROS 2 in both interactive (.bashrc) and login (.profile) bash shells
 RUN echo "source /opt/ros/jazzy/setup.bash" >> /root/.bashrc && \
-    echo "[ -f /ros2_ws/install/setup.bash ] && source /ros2_ws/install/setup.bash" >> /root/.bashrc
+    echo "[ -f /ros2_ws/install/setup.bash ] && source /ros2_ws/install/setup.bash" >> /root/.bashrc && \
+    echo "source /opt/ros/jazzy/setup.bash" >> /root/.profile && \
+    echo "[ -f /ros2_ws/install/setup.bash ] && source /ros2_ws/install/setup.bash" >> /root/.profile
 
 # ROS2 workspace mounted as a volume (see docker-compose.yml)
 WORKDIR /ros2_ws

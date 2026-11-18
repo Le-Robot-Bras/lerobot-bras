@@ -7,6 +7,7 @@ export QT_X11_NO_MITSHM=1
 export MESA_GL_VERSION_OVERRIDE=3.3
 export XDG_RUNTIME_DIR=/tmp/runtime-root
 mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 
 Xvfb :99 -screen 0 1600x900x24 +extension GLX +render -noreset &
 until xdpyinfo -display :99 >/dev/null 2>&1; do sleep 0.2; done
