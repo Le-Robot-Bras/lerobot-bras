@@ -19,6 +19,7 @@ setup(
     entry_points={
         "console_scripts": [
             "brain = so101_brain.brain_node:main",
+            "hand_control = so101_brain.hand_control_node:main",
         ],
     },
 )

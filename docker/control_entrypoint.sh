@@ -3,6 +3,7 @@
 # on SIGTERM so destroy_node() runs (the real arm gets a proper disconnect).
 set -e
 set -m  # each background job gets its own process group
+rm -f /dev/shm/fastrtps_* /dev/shm/sem.fastrtps_* 2>/dev/null || true
 
 source /opt/ros/jazzy/setup.bash
 cd /ros2_ws
@@ -49,6 +50,21 @@ fi
 
 if [ -f "install/so101_perception/lib/so101_perception/hand" ]; then
   ros2 run so101_perception hand &
+  pids+=($!)
+fi
+
+if [ -f "install/so101_brain/lib/so101_brain/hand_control" ]; then
+  ros2 run so101_brain hand_control &
+  pids+=($!)
+fi
+
+if [ -f "install/so101_perception/lib/so101_perception/hand_3d" ]; then
+  ros2 run so101_perception hand_3d &
+  pids+=($!)
+fi
+
+if [ -f "install/so101_perception/lib/so101_perception/aruco" ]; then
+  ros2 run so101_perception aruco &
   pids+=($!)
 fi
 

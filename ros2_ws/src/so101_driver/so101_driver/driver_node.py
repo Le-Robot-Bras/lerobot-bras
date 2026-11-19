@@ -11,6 +11,7 @@ TODO:
   - Disconnect the backend when the node stops (c'est fait)
 """
 from pathlib import Path
+import time
 
 import cv2
 import rclpy
@@ -74,25 +75,10 @@ class DriverNode(rclpy.node.Node):
         self._bridge = CvBridge()
         self._pub_image = self.create_publisher(Image, "/external_cam/image_raw", 10)
         self._cap = None
+        self._last_cam_retry = 0.0
+        self._cam_fail_count = 0
         if self._use_real_camera:
-            candidate_ids = [self._camera_id] + [i for i in (0, 1, 2, 3) if i != self._camera_id]
-            for cid in candidate_ids:
-                cap = cv2.VideoCapture(cid)
-                if cap.isOpened():
-                    self._cap = cap
-                    self._camera_id = cid
-                    break
-                cap.release()
-
-            if self._cap is None or not self._cap.isOpened():
-                self.get_logger().error(f"Failed to open any webcam (tried indices: {candidate_ids})")
-            else:
-                self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-                self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                self._cap.set(cv2.CAP_PROP_FPS, 30)
-                self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                self.get_logger().info(f"Physical webcam opened at index {self._camera_id} (MJPG 640x480)")
+            self._try_open_webcam()
         else:
             self.get_logger().info("Using simulated camera from MuJoCo")
         self.create_timer(1.0 / 10.0, self._publish_camera_frame)
@@ -179,15 +165,49 @@ class DriverNode(rclpy.node.Node):
         msg.position = positions
         self._pub_states.publish(msg)
 
+    def _try_open_webcam(self) -> bool:
+        self._last_cam_retry = time.monotonic()
+        candidate_ids = [self._camera_id] + [i for i in (0, 1, 2, 3) if i != self._camera_id]
+        for cid in candidate_ids:
+            cap = cv2.VideoCapture(cid)
+            if cap.isOpened():
+                self._cap = cap
+                self._camera_id = cid
+                self._cam_fail_count = 0
+                self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+                self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                self._cap.set(cv2.CAP_PROP_FPS, 30)
+                self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                self.get_logger().info(f"Physical webcam opened at index {self._camera_id} (MJPG 640x480)")
+                return True
+            cap.release()
+
+        self.get_logger().error(
+            f"Failed to open any webcam (tried indices: {candidate_ids})",
+            throttle_duration_sec=10.0,
+        )
+        return False
+
     def _publish_camera_frame(self):
         if self._use_real_camera:
             # Physical camera:
             if self._cap is None or not self._cap.isOpened():
-                return
+                if (time.monotonic() - self._last_cam_retry) >= 2.0:
+                    self._try_open_webcam()
+                if self._cap is None or not self._cap.isOpened():
+                    return
             ret, frame = self._cap.read()
             if not ret:
+                self._cam_fail_count += 1
                 self.get_logger().warning("Failed to grab frame from webcam", throttle_duration_sec=2.0)
+                if self._cam_fail_count > 10:
+                    self._cap.release()
+                    self._cap = None
+                    self._cam_fail_count = 0
+                    self.get_logger().warning("Webcam read failed repeatedly; releasing device for reconnect.")
                 return
+            self._cam_fail_count = 0
 
             # OpenCV reads frames as BGR
             msg = self._bridge.cv2_to_imgmsg(frame, encoding="bgr8")
