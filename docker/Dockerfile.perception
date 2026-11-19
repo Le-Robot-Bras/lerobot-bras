@@ -7,13 +7,17 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
+    libglib2.0-0 \
+    libegl1 \
     ros-jazzy-cv-bridge \
     ros-jazzy-tf2-ros \
     ros-jazzy-image-transport \
     && rm -rf /var/lib/apt/lists/*
 
-# numpy<2: cv_bridge (apt) is built against numpy 1.x
-RUN pip install --break-system-packages --no-cache-dir "numpy<2" "opencv-python-headless==4.10.*"
+RUN pip install --break-system-packages --no-cache-dir \
+    ultralytics mediapipe "numpy<2" && \
+    pip uninstall -y --break-system-packages opencv-contrib-python opencv-python || true && \
+    pip install --break-system-packages --no-cache-dir --force-reinstall --no-deps "opencv-python-headless==4.10.*"
 
 # YOLO-seg (detector:=yolo): ultralytics on a CPU-only PyTorch (no CUDA wheels).
 # ultralytics pulls opencv-python (needs libGL): headless is reinstalled on top of it.

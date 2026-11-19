@@ -19,14 +19,22 @@ MuJoCo camera axes). This is the ground-truth pose of the sim camera; on the rea
 the perception uses its own calibration file instead (calibrate_camera).
 """
 from pathlib import Path
+import time
 
+import cv2
 import numpy as np
 import rclpy
 import rclpy.node
+from cv_bridge import CvBridge
 from rclpy.executors import ExternalShutdownException
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image, JointState
 from std_srvs.srv import Trigger
+# Commented out from yolo_perception (already imported above or lazy-imported inside _connect_arm):
+# from sensor_msgs.msg import JointState
+# from so101_driver.remote_arm import DEFAULT_REMOTE_PORT, SO101Remote
+# from so101_sim import SO101Sim
+# from sensor_msgs.msg import Image
 
 JOINT_NAMES = [
     "shoulder_pan",
@@ -87,6 +95,17 @@ class DriverNode(rclpy.node.Node):
         self._robot = self._connect_arm(port)
         self.get_logger().info(f"Robot connected: {type(self._robot).__name__}")
 
+        ## camera things (yolo_perception + main merged without removing code)
+        self._use_real_camera: bool = self.declare_parameter("use_real_camera", False).value
+        self._camera_id: int = self.declare_parameter("camera_id", 0).value
+        self._bridge = CvBridge()
+        self._cap = None
+        self._last_cam_retry = 0.0
+        self._cam_fail_count = 0
+        self._camera = None
+        self._cam_K = None
+        #####
+
         self._target: dict[str, float] = {}
 
         self._pub_states = self.create_publisher(JointState, "/joint_states", 10)
@@ -95,16 +114,28 @@ class DriverNode(rclpy.node.Node):
         self.create_timer(1.0 / JOINT_STATE_HZ, self._publish_joint_states)
         self.create_service(Trigger, "/sim/reset_object", self._cb_reset_object)
 
-        self._camera = None
-        self._cam_K = None
-        if self._use_sim:
-            self._setup_sim_camera()
-        elif camera_device:
-            self._setup_real_camera(camera_device)
-        if self._camera is not None:
-            self._pub_image = self.create_publisher(Image, "/external_cam/image_raw", qos_profile_sensor_data)
-            self._pub_info = self.create_publisher(CameraInfo, "/external_cam/camera_info", qos_profile_sensor_data)
-            self.create_timer(1.0 / CAMERA_HZ, self._publish_camera)
+        if self._use_real_camera:
+            self._pub_image = self.create_publisher(Image, "/external_cam/image_raw", 10)
+            self._try_open_webcam()
+            self.create_timer(1.0 / 10.0, self._publish_camera_frame)
+        else:
+            # Commented out from yolo_perception (handled below by main's sim/camera_device pipeline,
+            # which also publishes /external_cam/camera_info and cam_K/cam_T):
+            # self._pub_image = self.create_publisher(Image, "/external_cam/image_raw", 10)
+            # self.get_logger().info("Using simulated camera from MuJoCo")
+            # self.create_timer(1.0 / 10.0, self._publish_camera_frame)
+            if self._use_sim:
+                self._setup_sim_camera()
+            elif camera_device:
+                self._setup_real_camera(camera_device)
+            if self._camera is not None:
+                # Commented out from main (BEST_EFFORT qos_profile_sensor_data is incompatible with
+                # RELIABLE subscribers like hand_node/yolo_node/aruco_node; RELIABLE depth=10 serves both):
+                # self._pub_image = self.create_publisher(Image, "/external_cam/image_raw", qos_profile_sensor_data)
+                # self._pub_info = self.create_publisher(CameraInfo, "/external_cam/camera_info", qos_profile_sensor_data)
+                self._pub_image = self.create_publisher(Image, "/external_cam/image_raw", 10)
+                self._pub_info = self.create_publisher(CameraInfo, "/external_cam/camera_info", 10)
+                self.create_timer(1.0 / CAMERA_HZ, self._publish_camera)
 
         self.get_logger().info("Driver node ready.")
 
@@ -167,6 +198,8 @@ class DriverNode(rclpy.node.Node):
             self._robot.disconnect()
             self.get_logger().info("Robot disconnected.")
         super().destroy_node()
+        if hasattr(self, "_cap") and self._cap is not None and self._cap.isOpened():
+            self._cap.release()
 
     def _cb_reset_object(self, request, response):
         """Simulation only: new random cube pose (SO101Sim.randomize_object)."""
@@ -213,7 +246,7 @@ class DriverNode(rclpy.node.Node):
         msg.position = positions
         self._pub_states.publish(msg)
 
-    # ---------------------------------------------------------------- camera
+    # ---------------------------------------------------------------- camera (main)
 
     def _setup_sim_camera(self):
         self._camera = "sim"
@@ -275,6 +308,66 @@ class DriverNode(rclpy.node.Node):
         P[:, :3] = self._cam_K
         info.p = P.ravel().tolist()
         self._pub_info.publish(info)
+
+    # ---------------------------------------------------------------- camera (yolo_perception webcam)
+
+    def _try_open_webcam(self) -> bool:
+        self._last_cam_retry = time.monotonic()
+        candidate_ids = [self._camera_id] + [i for i in (0, 1, 2, 3) if i != self._camera_id]
+        for cid in candidate_ids:
+            cap = cv2.VideoCapture(cid)
+            if cap.isOpened():
+                self._cap = cap
+                self._camera_id = cid
+                self._cam_fail_count = 0
+                self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+                self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                self._cap.set(cv2.CAP_PROP_FPS, 30)
+                self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                self.get_logger().info(f"Physical webcam opened at index {self._camera_id} (MJPG 640x480)")
+                return True
+            cap.release()
+
+        self.get_logger().error(
+            f"Failed to open any webcam (tried indices: {candidate_ids})",
+            throttle_duration_sec=10.0,
+        )
+        return False
+
+    def _publish_camera_frame(self):
+        if self._use_real_camera:
+            # Physical camera:
+            if self._cap is None or not self._cap.isOpened():
+                if (time.monotonic() - self._last_cam_retry) >= 2.0:
+                    self._try_open_webcam()
+                if self._cap is None or not self._cap.isOpened():
+                    return
+            ret, frame = self._cap.read()
+            if not ret:
+                self._cam_fail_count += 1
+                self.get_logger().warning("Failed to grab frame from webcam", throttle_duration_sec=2.0)
+                if self._cam_fail_count > 10:
+                    self._cap.release()
+                    self._cap = None
+                    self._cam_fail_count = 0
+                    self.get_logger().warning("Webcam read failed repeatedly; releasing device for reconnect.")
+                return
+            self._cam_fail_count = 0
+
+            # OpenCV reads frames as BGR
+            msg = self._bridge.cv2_to_imgmsg(frame, encoding="bgr8")
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = "camera_optical_frame"
+            self._pub_image.publish(msg)
+        else:
+            # In simulation: MuJoCo provides an RGB image
+            if self._use_sim and hasattr(self._robot, "render_camera"):
+                frame = self._robot.render_camera()
+                msg = self._bridge.cv2_to_imgmsg(frame, encoding="rgb8")
+                msg.header.stamp = self.get_clock().now().to_msg()
+                msg.header.frame_id = "camera_optical_frame"
+                self._pub_image.publish(msg)
 
 
 def main(args=None):

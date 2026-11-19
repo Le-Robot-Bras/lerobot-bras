@@ -21,6 +21,7 @@ setup(
             "brain = so101_brain.brain_node:main",
             "demo_loop = so101_brain.demo_loop:main",
             "monitor = so101_brain.monitor:main",
+            "hand_control = so101_brain.hand_control_node:main",
         ],
     },
 )

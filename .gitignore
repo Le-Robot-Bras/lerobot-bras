@@ -12,3 +12,14 @@ logs/
 datasets/
 runs/
 *.cache
+
+# Local camera scripts
+link_camera.sh
+link_camera.ps1
+
+# AI handover guide
+GUIDE.md
+
+# Auto-downloaded MediaPipe model
+ros2_ws/hand_landmarker.task
+

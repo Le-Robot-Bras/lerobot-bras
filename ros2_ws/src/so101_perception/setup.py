@@ -14,11 +14,15 @@ setup(
         ("share/" + package_name + "/launch", glob("launch/*.launch.py")),
         ("share/" + package_name + "/models", glob("models/*.pt")),
     ],
-    entry_points={
+        entry_points={
         "console_scripts": [
             "perception = so101_perception.perception_node:main",
             "calibrate_camera = so101_perception.calibrate_camera:main",
+            "yolo = so101_perception.yolo_node:main",
+            "hand = so101_perception.hand_node:main",
+            "hand_3d = so101_perception.hand_3d_node:main",
             "calibrate_camera_aruco = so101_perception.calibrate_camera_aruco:main",
+            "hand_debug = so101_perception.hand_debug_node:main",
         ],
     },
 )
