@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: so101-core
+Version: 0.1.0
+Summary: Minimal Feetech/SO-ARM101 driver (extracted from LeRobot, Apache-2.0) — Tek5 Epitech module
+Requires-Python: >=3.10
+Requires-Dist: numpy
+Requires-Dist: draccus
+Requires-Dist: pyserial
+Requires-Dist: feetech-servo-sdk
+Requires-Dist: tqdm
+Requires-Dist: deepdiff
+Requires-Dist: opencv-python-headless
+Provides-Extra: sim
+Requires-Dist: mujoco>=3.0; extra == "sim"

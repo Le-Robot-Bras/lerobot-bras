@@ -18,6 +18,7 @@ setup(
         "console_scripts": [
             "perception = so101_perception.perception_node:main",
             "calibrate_camera = so101_perception.calibrate_camera:main",
+            "calibrate_camera_aruco = so101_perception.calibrate_camera_aruco:main",
         ],
     },
 )
