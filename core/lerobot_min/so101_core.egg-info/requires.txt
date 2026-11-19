@@ -1,0 +1,10 @@
+numpy
+draccus
+pyserial
+feetech-servo-sdk
+tqdm
+deepdiff
+opencv-python-headless
+
+[sim]
+mujoco>=3.0

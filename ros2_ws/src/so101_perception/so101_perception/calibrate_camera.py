@@ -47,6 +47,13 @@ def calibrate_intrinsics(images, cols, rows, square):
             raise ValueError("All calibration images must have the same resolution")
         size = current_size
         found, corners = cv2.findChessboardCornersSB(image, (cols, rows))
+        if not found:  # dim / low-contrast / strongly tilted prints: classic detector + refinement
+            found, corners = cv2.findChessboardCorners(
+                image, (cols, rows), cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE)
+            if found:
+                corners = cv2.cornerSubPix(
+                    image, corners, (11, 11), (-1, -1),
+                    (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001))
         if found:
             objects.append(grid.copy())
             pixels.append(corners)
