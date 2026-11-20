@@ -50,8 +50,24 @@ class ArmBridge:
         self.max_step_gripper = max_step_gripper  # % per command
         self.torque_on = False
 
+    BUS_TRIES = 4  # a single lost status packet on the serial bus must not drop the client
+
+    def _retry(self, what, fn):
+        """Runs fn(); retries transient serial errors (no status packet, CRC) a few times."""
+        for i in range(self.BUS_TRIES):
+            try:
+                return fn()
+            except ConnectionError:
+                if i == self.BUS_TRIES - 1:
+                    raise
+                log.warning("bus %s failed (try %d/%d), retrying", what, i + 1, self.BUS_TRIES)
+                time.sleep(0.002)
+
     def _present(self) -> dict[str, float]:
-        return {m: float(v) for m, v in self.bus.sync_read("Present_Position").items()}
+        return {m: float(v) for m, v in self._retry("read", lambda: self.bus.sync_read("Present_Position")).items()}
+
+    def _write_goal(self, goal: dict) -> None:
+        self._retry("write", lambda: self.bus.sync_write("Goal_Position", goal))
 
     def handle(self, msg: dict) -> dict:
         cmd = msg.get("cmd")
@@ -82,7 +98,7 @@ class ArmBridge:
         if on:
             if not self.allow_motion:
                 return {"ok": False, "error": "motion is disabled: start the server with --allow-motion"}
-            self.bus.sync_write("Goal_Position", self._present())  # hold here, do not jump
+            self._write_goal(self._present())  # hold here, do not jump
             self.bus.enable_torque()
             self.torque_on = True
             log.warning("TORQUE ENABLED")
@@ -105,7 +121,7 @@ class ArmBridge:
             step = self.max_step_gripper if motor == GRIPPER else self.max_step
             goal[motor] = min(max(float(value), present[motor] - step), present[motor] + step)
         if goal:
-            self.bus.sync_write("Goal_Position", goal)
+            self._write_goal(goal)
         return {"ok": True, "applied": {f"{m}.pos": v for m, v in goal.items()}, "torque": True}
 
     def freeze(self):
@@ -113,7 +129,7 @@ class ArmBridge:
         if not self.torque_on:
             return
         try:
-            self.bus.sync_write("Goal_Position", self._present())
+            self._write_goal(self._present())
         except Exception:
             log.exception("freeze failed")
 

@@ -275,12 +275,16 @@ class Arm:
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.f = self.sock.makefile("rb")
 
-    def call(self, msg):
-        self.sock.sendall((json.dumps(msg) + "\n").encode())
-        r = json.loads(self.f.readline())
-        if not r.get("ok", False):
-            raise RuntimeError(f"real_arm_server: {r}")
-        return r
+    def call(self, msg, tries=3):
+        """One request; a transient serial-bus error on the server side is retried."""
+        for i in range(tries):
+            self.sock.sendall((json.dumps(msg) + "\n").encode())
+            r = json.loads(self.f.readline())
+            if r.get("ok", False):
+                return r
+            if "ConnectionError" not in str(r.get("error", "")) or i == tries - 1:
+                raise RuntimeError(f"real_arm_server: {r}")
+            time.sleep(0.005)
 
     def read(self):
         o = self.call({"cmd": "read"})["obs"]
