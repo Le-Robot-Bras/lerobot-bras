@@ -2,9 +2,9 @@
 """train_vocal_model.py - teaches tools/dance_live.py to hear vocals and instruments live.
 
     uv run --no-project --python 3.12 --with demucs --with torchaudio --with mediapipe --with numpy \
-        tools/train_vocal_model.py                       # all songs in ~/Desktop/Anime/music
-    ... tools/train_vocal_model.py --songs ~/Music/dance --songs ~/Desktop/Anime/music   # several folders
-    ... tools/train_vocal_model.py --relabel             # recompute the teacher labels
+        tools/train_vocal_model.py --songs /path/to/your/music          # all songs in that folder
+    ... tools/train_vocal_model.py --songs ~/Music/a --songs ~/Music/b     # several folders
+    ... tools/train_vocal_model.py --songs /path/to/your/music --relabel   # recompute the teacher labels
 
 Re-runnable: every song is cached in ~/.cache/so101/labels/ under its CONTENT hash (+ the label /
 feature version), so a new run only processes new or changed songs.
@@ -325,7 +325,8 @@ def at_labels(t_lab, t_pred, g):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--songs", action="append", help="folder of songs (repeatable); default ~/Desktop/Anime/music")
+    ap.add_argument("--songs", action="append", required=True,
+                    help="folder of your songs (mp3/wav/m4a/flac/ogg); repeatable for several folders")
     ap.add_argument("--out", default=str(dl.STUDENT_PATH))
     ap.add_argument("--relabel", action="store_true", help="recompute the Demucs teacher labels")
     ap.add_argument("--teacher", default="htdemucs_ft", help="Demucs model of the teacher (htdemucs_ft, htdemucs)")
@@ -334,7 +335,7 @@ def main(argv=None):
     ap.add_argument("--no-cv", action="store_true", help="skip the leave-one-song-out evaluation")
     ap.add_argument("--report", help="write the cross-validation report (json) here")
     args = ap.parse_args(argv)
-    folders = args.songs or [str(Path.home() / "Desktop/Anime/music")]
+    folders = [str(Path(f).expanduser()) for f in args.songs]
     paths = sorted({p for f in folders for ext in ("mp3", "wav", "m4a", "flac", "ogg")
                     for p in glob.glob(os.path.join(os.path.expanduser(f), f"*.{ext}"))})
     if len(paths) < 3:
