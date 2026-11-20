@@ -50,7 +50,7 @@ docker compose exec control bash -lc "source /ros2_ws/install/setup.bash && ros2
 | Node | Role |
 |---|---|
 | `so101_driver` | backend (sim / real / remote), `/joint_states` 30 Hz, `/joint_command` (clamped, partial OK), `/external_cam/image_raw` + `camera_info` 10 Hz |
-| `so101_perception` | mask (HSV thresholds, or YOLO-seg with `--yolo`) + fit of a known-size box model → `/object_position`, `/drop_box_position` (position + yaw), `/perception/mask`, `/perception/debug` |
+| `so101_perception` | mask (HSV thresholds, or YOLO-seg with `--yolo`) + fit of a known-size box model → `/object_position`, `/drop_box_position` (position + yaw), `/perception/mask`, `/perception/debug`, static TF `base_link → external_cam` (the camera pose it uses: calibration file, else the driver's) |
 | `so101_brain` | IK (pinocchio, `kinematics.py`) + state machine (`pick_place.py`), `/brain/start`, `/brain/stop`, `/brain_state`, `/go_to_target`, `/end_effector_pose` |
 
 State machine: `IDLE → HOME → OBSERVE → APPROACH → DESCEND → GRASP → LIFT → TRANSPORT → RELEASE → RETREAT → DONE`,
