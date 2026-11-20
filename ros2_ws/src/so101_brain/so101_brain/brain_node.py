@@ -66,6 +66,8 @@ class BrainNode(rclpy.node.Node):
         super().__init__("so101_brain")
         urdf = Path(get_package_share_directory("so101_description")) / "urdf" / "so101.urdf"
         self._kin = ArmKinematics(urdf)
+        if not self._kin.checks_self_collision:
+            self.get_logger().warning("IK without self-collision check (collision meshes not loaded)")
 
         config = PickPlaceConfig()
         # A few useful knobs as ROS parameters (the rest: PickPlaceConfig).
@@ -164,8 +166,9 @@ class BrainNode(rclpy.node.Node):
         res = self._kin.solve_global([p.x, p.y, p.z], q0, frame="tcp")
         if not res.ok(1e-3):
             response.success = False
-            response.message = (f"Target ({p.x:.3f}, {p.y:.3f}, {p.z:.3f}) unreachable "
-                                f"(residual {res.position_error * 1000:.1f} mm)")
+            why = ("the arm would hit itself" if res.self_collision
+                   else f"residual {res.position_error * 1000:.1f} mm")
+            response.message = f"Target ({p.x:.3f}, {p.y:.3f}, {p.z:.3f}) unreachable ({why})"
             return response
         self._publish_command(self._kin.joints_from_q(res.q), None)
         response.success = True

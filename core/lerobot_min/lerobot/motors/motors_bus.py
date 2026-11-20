@@ -179,6 +179,9 @@ class MotorCalibration:
     homing_offset: int
     range_min: int
     range_max: int
+    # RADIANS mode only: the joint's zero (URDF zero) sits this many radians away from the middle of
+    # [range_min, range_max] -- e.g. a reassembled joint whose mechanical stops aren't symmetric.
+    zero_offset: float = 0.0
 
 
 @dataclass
@@ -871,13 +874,16 @@ class SerialMotorsBus(MotorsBusBase):
             elif self.motors[motor].norm_mode is MotorNormMode.DEGREES:
                 mid = (min_ + max_) / 2
                 max_res = self.model_resolution_table[self._id_to_model(id_)] - 1
-                normalized_values[id_] = (val - mid) * 360 / max_res
+                deg = (val - mid) * 360 / max_res
+                normalized_values[id_] = -deg if drive_mode else deg
             elif self.motors[motor].norm_mode is MotorNormMode.RADIANS:
                 import math
 
                 mid = (min_ + max_) / 2
                 max_res = self.model_resolution_table[self._id_to_model(id_)] - 1
-                normalized_values[id_] = (val - mid) * 2 * math.pi / max_res
+                rad = (val - mid) * 2 * math.pi / max_res
+                rad = -rad if drive_mode else rad  # drive_mode 1 = motor mounted reversed
+                normalized_values[id_] = rad - self.calibration[motor].zero_offset
             else:
                 raise NotImplementedError
 
@@ -905,6 +911,7 @@ class SerialMotorsBus(MotorsBusBase):
                 bounded_val = min(100.0, max(0.0, val))
                 unnormalized_values[id_] = int((bounded_val / 100) * (max_ - min_) + min_)
             elif self.motors[motor].norm_mode is MotorNormMode.DEGREES:
+                val = -val if drive_mode else val
                 mid = (min_ + max_) / 2
                 max_res = self.model_resolution_table[self._id_to_model(id_)] - 1
                 raw_val = int((val * max_res / 360) + mid)
@@ -912,6 +919,8 @@ class SerialMotorsBus(MotorsBusBase):
             elif self.motors[motor].norm_mode is MotorNormMode.RADIANS:
                 import math
 
+                val = val + self.calibration[motor].zero_offset
+                val = -val if drive_mode else val  # drive_mode 1 = motor mounted reversed
                 mid = (min_ + max_) / 2
                 max_res = self.model_resolution_table[self._id_to_model(id_)] - 1
                 raw_val = int((val * max_res / (2 * math.pi)) + mid)

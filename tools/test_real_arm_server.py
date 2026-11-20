@@ -33,7 +33,42 @@ class FakeBus:
         self.torque = False
 
 
+class FlakyBus(FakeBus):
+    """Fails the first `fails` bus reads/writes like a lost status packet."""
+
+    def __init__(self, fails):
+        super().__init__()
+        self.fails = fails
+
+    def _maybe_fail(self):
+        if self.fails > 0:
+            self.fails -= 1
+            raise ConnectionError("There is no status packet!")
+
+    def sync_read(self, name):
+        self._maybe_fail()
+        return super().sync_read(name)
+
+    def sync_write(self, name, values):
+        self._maybe_fail()
+        super().sync_write(name, values)
+
+
 class BridgeTests(unittest.TestCase):
+    def test_transient_bus_error_is_retried(self):
+        bus = FlakyBus(fails=2)
+        b = srv.ArmBridge(bus, allow_motion=True)
+        r = b.handle({"cmd": "read"})
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["obs"]["gripper.pos"], 50.0)
+
+    def test_persistent_bus_error_is_reported_not_raised(self):
+        bus = FlakyBus(fails=100)
+        b = srv.ArmBridge(bus, allow_motion=True)
+        r = b.handle({"cmd": "read"})
+        self.assertFalse(r["ok"])
+        self.assertIn("ConnectionError", r["error"])
+
     def test_read_only_by_default(self):
         bus = FakeBus()
         b = srv.ArmBridge(bus)
