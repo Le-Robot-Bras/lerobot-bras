@@ -24,8 +24,18 @@ first with the orientation in its null space ("soft"). Joint limits are handled
 with an active set. For pick & place the gripper points straight down with a
 yaw around the vertical: with 5 DoF this is exactly reachable for low targets
 (pan + 3 pitch joints set x, y, z and the pitch, wrist_roll sets the yaw).
+
+Self-collision: the IK only returns configurations where the arm does not hit
+itself. The URDF collision meshes are replaced by their convex hulls (what MuJoCo
+collides with), and every pair of non-adjacent links must stay `collision_margin`
+apart (coal, ~0.5 ms per check). Without it, position-only IK happily folds the
+wrist into the shoulder or the forearm into the base near the robot: the servos
+then stall against the structure (measured in MuJoCo: up to 29 mm of error).
 """
+import math
+import warnings
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pinocchio
@@ -47,14 +57,38 @@ def top_down_rotation(yaw: float) -> np.ndarray:
     return np.column_stack([x, np.cross(z, x), z])
 
 
+def _convex_hull(mesh):
+    """coal convex hull of a collision mesh (BVH). coal computes it with qhull when it was
+    built with it (pip wheel); the ROS Jazzy package is not, so scipy (qhull too) is the fallback."""
+    try:
+        mesh.buildConvexHull(True, "Qt")
+        return mesh.convex
+    except Exception:  # noqa: BLE001 - "Library built without qhull"
+        import coal
+        from scipy.spatial import ConvexHull
+        points = np.asarray(mesh.vertices(), dtype=float)
+        hull = ConvexHull(points)
+        used = np.unique(hull.simplices)
+        index = {old: new for new, old in enumerate(used)}
+        vertices = coal.StdVec_Vec3s()
+        for p in points[used]:
+            vertices.append(p)
+        triangles = coal.StdVec_Triangle()
+        for a, b, c in hull.simplices:
+            triangles.append(coal.Triangle(index[a], index[b], index[c]))
+        return coal.Convex(vertices, triangles)
+
+
 @dataclass
 class IKResult:
     q: np.ndarray            # full pinocchio configuration
     position_error: float    # m
     rotation_error: float    # rad (0 if no orientation target)
+    clearance: float = math.inf   # m, smallest distance between non-adjacent links
+    self_collision: bool = False  # clearance below the margin: the arm would hit itself
 
     def ok(self, pos_tol: float, rot_tol: float = np.inf) -> bool:
-        return self.position_error < pos_tol and self.rotation_error < rot_tol
+        return self.position_error < pos_tol and self.rotation_error < rot_tol and not self.self_collision
 
 
 class ArmKinematics:
@@ -62,7 +96,8 @@ class ArmKinematics:
 
     def __init__(self, urdf_path: str, grasp_offset=DEFAULT_GRASP_OFFSET,
                  held_offset=DEFAULT_HELD_OFFSET, damping: float = 1e-2, max_step: float = 0.2,
-                 rotation_weight: float = 0.3, seed: int | None = None):
+                 rotation_weight: float = 0.3, seed: int | None = None,
+                 self_collision: bool = True, collision_margin: float = 0.002):
         self.model = pinocchio.buildModelFromUrdf(str(urdf_path))
         tcp_id = self.model.getFrameId(TCP_FRAME)
         self.frames = {
@@ -81,6 +116,47 @@ class ArmKinematics:
         self.max_step = max_step
         self.rotation_weight = rotation_weight  # m per rad: trades position vs orientation error
         self._rng = np.random.default_rng(seed)
+        self.collision_margin = collision_margin
+        self._geom = self._geom_data = None
+        if self_collision:
+            try:
+                self._load_collisions(Path(urdf_path))
+            except Exception as exc:  # meshes or coal missing: IK without the check
+                warnings.warn(f"self-collision check disabled: {exc}")
+
+    def _load_collisions(self, urdf_path: Path):
+        """Convex hulls of the URDF collision meshes, all pairs of non-adjacent links."""
+        # package://so101_description/... -> the directory that contains so101_description/
+        geom = pinocchio.buildGeomFromUrdf(self.model, str(urdf_path), pinocchio.GeometryType.COLLISION,
+                                           package_dirs=[str(urdf_path.parents[2]),
+                                                         str(urdf_path.resolve().parents[2])])
+        if not geom.geometryObjects:
+            raise RuntimeError("no collision geometry in the URDF")
+        for obj in geom.geometryObjects:
+            obj.geometry = _convex_hull(obj.geometry)
+        geom.addAllCollisionPairs()
+        parents = self.model.parents
+        pairs = []
+        for pair in geom.collisionPairs:
+            j1 = geom.geometryObjects[pair.first].parentJoint
+            j2 = geom.geometryObjects[pair.second].parentJoint
+            if j1 != j2 and parents[j1] != j2 and parents[j2] != j1:  # adjacent links always touch
+                pairs.append(pair)
+        geom.removeAllCollisionPairs()
+        for pair in pairs:
+            geom.addCollisionPair(pair)
+        self._geom, self._geom_data = geom, pinocchio.GeometryData(geom)
+
+    @property
+    def checks_self_collision(self) -> bool:
+        return self._geom is not None
+
+    def self_clearance(self, q: np.ndarray) -> float:
+        """Smallest distance between two non-adjacent links (m, < 0 = interpenetration)."""
+        if self._geom is None:
+            return math.inf
+        pinocchio.computeDistances(self.model, self.data, self._geom, self._geom_data, q)
+        return float(min(r.min_distance for r in self._geom_data.distanceResults))
 
     def _add_tcp_frame(self, name, tcp_id, offset):
         tcp = self.model.frames[tcp_id]
@@ -223,7 +299,8 @@ class ArmKinematics:
             for attempt in range(3):
                 seed = q_seed if attempt == 0 else self._random_seed(q_seed)
                 res = self.solve(position, seed, top_down_rotation(y), frame, soft_rotation=True)
-                if res.position_error < pos_tol and (best is None or res.rotation_error < best.rotation_error):
+                if (res.position_error < pos_tol and not res.self_collision
+                        and (best is None or res.rotation_error < best.rotation_error)):
                     best, best_yaw = res, y
         if best is None:  # unreachable: best effort, for diagnosis
             best = self.solve_global(position, q_seed, top_down_rotation(yaw), frame, restarts=4)
@@ -235,8 +312,11 @@ class ArmKinematics:
     def _result(self, q, target, rotation, frame) -> IKResult:
         pose = self.fk(q, frame)
         rot_err = 0.0 if rotation is None else float(np.linalg.norm(pinocchio.log3(rotation @ pose.rotation.T)))
-        return IKResult(q, float(np.linalg.norm(target - pose.translation)), rot_err)
+        clearance = self.self_clearance(q)
+        return IKResult(q, float(np.linalg.norm(target - pose.translation)), rot_err,
+                        clearance, clearance < self.collision_margin)
 
     @staticmethod
     def _cost(res: IKResult) -> float:
-        return res.position_error + 0.01 * res.rotation_error
+        # a colliding solution only wins against other colliding ones
+        return res.position_error + 0.01 * res.rotation_error + (1.0 if res.self_collision else 0.0)

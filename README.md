@@ -60,10 +60,34 @@ Evaluate without ROS (same code, MuJoCo, ground truth only used for scoring):
 
 ```bash
 python3 tools/eval_pick_place.py --episodes 20        # success rate
-python3 tools/eval_pick_place.py --ik-test 50         # IK error measured in MuJoCo (S4: < 1 cm)
+python3 tools/eval_pick_place.py --ik-test 200        # IK error measured in MuJoCo (S4: < 1 cm)
 python3 tools/eval_pick_place.py --perception-test 30 # perception error
 python3 tools/eval_pick_place.py --episodes 1 --video run.mp4
 python3 tools/eval_pick_place.py --perception-test 40 --detector yolo --lighting 0.2   # YOLO, dim light
+```
+
+### IK accuracy (milestone S4)
+
+`--ik-test 200`: random XYZ targets (radius 0.12-0.32 m, height 0.02-0.20 m, ±69° around the
+base), position-only IK on the TCP (`/go_to_target` uses the same call), joint command sent to
+MuJoCo, then the TCP really reached is measured in the simulation once the arm is still.
+
+| | result |
+|---|---|
+| targets reached | 195 / 200 (5 refused: closer than 0.14 m to the base) |
+| error measured in MuJoCo | mean 0.15 mm, median 0.15 mm, p95 0.24 mm, **max 0.28 mm** |
+| under 1 cm | 100 % |
+
+The IK rejects configurations where the arm would hit itself (convex hulls of the URDF
+collision meshes, every pair of non-adjacent links at least 2 mm apart, coal, < 1 ms). Without
+that check the same test reached only 97 % under 1 cm (max 29 mm): near the base the IK folded
+the wrist into the shoulder, or the forearm into the base, and the servos stalled.
+
+Live view of the same test (3D view, target, verdict, clearance between links, statistics, and a
+button to turn the self-collision check off and see the arm hit itself):
+
+```bash
+python3 tools/ik_live.py --hard 0.5      # http://localhost:8009 ; --hard: share of targets near the base / low
 ```
 
 ### Perception with YOLO-seg (optional)

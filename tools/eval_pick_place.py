@@ -275,23 +275,31 @@ def ik_test(n, seed=0):
     sim.connect()
     kin = ArmKinematics(URDF, seed=seed)
     errs = []
+    refused = 0
     q = kin.neutral()
     for i in range(n):
         r, a, z = rng.uniform(0.12, 0.32), rng.uniform(-1.2, 1.2), rng.uniform(0.02, 0.20)
         target = np.array([r * np.cos(a), r * np.sin(a), z])
         res = kin.solve_global(target, q, frame="tcp")
         if not res.ok(1e-3):
-            print(f"  {i}: target {np.round(target, 3)} unreachable by IK ({res.position_error * 1000:.1f} mm)")
+            why = "self-collision" if res.self_collision else f"{res.position_error * 1000:.1f} mm"
+            print(f"  {i}: target {np.round(target, 3)} unreachable by IK ({why})")
+            refused += 1
             continue
         q = res.q
         action = {f"{k}.pos": v for k, v in kin.joints_from_q(q).items()}
-        for _ in range(150):
+        # wait until the arm is still (a far solution needs more than a fixed delay), max 4x 150 calls
+        for step in range(600):
             sim.send_action(action)
+            if step >= 20 and np.abs(sim.data.qvel[:6]).max() < 1e-3:
+                break
         measured = sim.data.site("gripperframe").xpos.copy()
         errs.append(np.linalg.norm(measured - target) * 1000)
     errs = np.array(errs)
-    print(f"IK test: {len(errs)}/{n} targets reached, error measured in MuJoCo: "
-          f"mean {errs.mean():.2f} mm, max {errs.max():.2f} mm, <10 mm: {np.mean(errs < 10) * 100:.0f}%")
+    print(f"IK test: {len(errs)}/{n} targets reached ({refused} refused by the IK), error measured in MuJoCo: "
+          f"mean {errs.mean():.2f} mm, median {np.median(errs):.2f} mm, p95 {np.percentile(errs, 95):.2f} mm, "
+          f"max {errs.max():.2f} mm, <10 mm: {np.mean(errs < 10) * 100:.0f}%"
+          + ("" if kin.checks_self_collision else " [self-collision check OFF]"))
 
 
 def perception_test(n):
