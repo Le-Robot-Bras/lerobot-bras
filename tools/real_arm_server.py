@@ -198,6 +198,23 @@ def open_arm(port: str, calibration: str):
     return robot
 
 
+def tune_servos(bus, gain=None, accel=None):
+    """Writes P gain / acceleration to the arm servos (not the gripper), torque off while writing."""
+    arm = [m for m in bus.motors if m != GRIPPER]
+    before = {m: (bus.read("P_Coefficient", m), bus.read("Acceleration", m)) for m in arm}
+    log.info("servos before: %s", ", ".join(f"{m} P={p} acc={a}" for m, (p, a) in before.items()))
+    with bus.torque_disabled():
+        for m in arm:
+            if gain is not None:
+                bus.write("P_Coefficient", m, int(gain))
+                bus.write("I_Coefficient", m, 0)
+                bus.write("D_Coefficient", m, 32)
+            if accel is not None:
+                bus.write("Acceleration", m, int(accel))
+    after = {m: (bus.read("P_Coefficient", m), bus.read("Acceleration", m)) for m in arm}
+    log.info("servos after:  %s", ", ".join(f"{m} P={p} acc={a}" for m, (p, a) in after.items()))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--port", required=True, help="serial port of the arm, e.g. /dev/cu.usbmodemXXXX")
@@ -208,11 +225,17 @@ def main():
     p.add_argument("--max-step", type=float, default=0.05, help="max rad per command, arm joints")
     p.add_argument("--max-step-gripper", type=float, default=10.0, help="max %% per command, gripper")
     p.add_argument("--watchdog", type=float, default=1.0, help="freeze the arm after this many silent seconds")
+    p.add_argument("--servo-gain", type=int, help="write this P_Coefficient to the 5 arm servos at startup "
+                   "(LeRobot uses 16 = soft; Feetech default 32 = stiffer, snappier; gripper untouched)")
+    p.add_argument("--servo-accel", type=int, help="write this Acceleration (0-254, 254 = fastest) to the 5 arm "
+                   "servos at startup (gripper untouched)")
     args = p.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     robot = open_arm(args.port, args.calibration)  # keep `robot` alive for the whole run
     bus = robot.bus
+    if args.servo_gain is not None or args.servo_accel is not None:
+        tune_servos(bus, args.servo_gain, args.servo_accel)
     bridge = ArmBridge(bus, args.allow_motion, args.max_step, args.max_step_gripper)
     log.info("arm connected on %s (%s)", args.port, "motion ALLOWED" if args.allow_motion else "READ-ONLY")
     try:

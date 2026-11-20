@@ -296,11 +296,12 @@ class PickPlace:
             # the jaws, so it stays along a box axis where the clearance is largest.
             res, yaw = self.kin.solve_top_down(self._drop, self._q_cmd, self._box_yaw, frame="held",
                                                symmetry=np.pi / 2)
-            if res.position_error > 0.002:  # not reachable box-aligned: any yaw
+            if res.position_error > 0.002 or res.self_collision:  # not reachable box-aligned: any yaw
                 res, yaw = self.kin.solve_top_down(self._drop, self._q_cmd, self._jaw_yaw, frame="held",
                                                    symmetry=np.pi / 12)
-            if res.position_error > 0.005:
-                self._abort(now, f"drop point unreachable ({res.position_error * 1000:.0f} mm)")
+            if res.position_error > 0.005 or res.self_collision:
+                why = "self-collision" if res.self_collision else f"{res.position_error * 1000:.0f} mm"
+                self._abort(now, f"drop point unreachable ({why})")
                 return
             self._move_joints(res.q, now)
             self._enter(State.TRANSPORT, now, "transporting to the box")
@@ -352,7 +353,8 @@ class PickPlace:
             if self._unreachable is None or np.linalg.norm(self._unreachable - target.position) > 0.01:
                 self._unreachable = target.position.copy()
                 self.log("error", f"cube at {np.round(target.position, 3).tolist()} unreachable top-down "
-                                  f"({grasp.position_error * 1000:.0f} mm, {np.degrees(grasp.rotation_error):.0f} deg)")
+                                  f"({grasp.position_error * 1000:.0f} mm, {np.degrees(grasp.rotation_error):.0f} deg"
+                                  + (", self-collision)" if grasp.self_collision else ")"))
             self.status = "cube out of reach, waiting for it to be moved"
             return False
         self._unreachable = None
@@ -366,8 +368,9 @@ class PickPlace:
         self._box_yaw = box.yaw
         pre = self._target + [0.0, 0.0, cfg.approach_height]
         res = self.kin.solve(pre, grasp.q, top_down_rotation(jaw_yaw), soft_rotation=True)
-        if res.position_error > 2e-3:
-            self.log("error", f"pre-grasp unreachable ({res.position_error * 1000:.0f} mm)")
+        if res.position_error > 2e-3 or res.self_collision:
+            self.log("error", f"pre-grasp unreachable ({res.position_error * 1000:.0f} mm"
+                              + (", self-collision)" if res.self_collision else ")"))
             self.status = "pre-grasp out of reach"
             return False
         self._move_joints(res.q, now)

@@ -7,6 +7,8 @@ Publishes:   /object_position, /drop_box_position  (geometry_msgs/PoseStamped, 1
              /perception/mask  (sensor_msgs/Image mono8, for RViz)
              /perception/debug (sensor_msgs/Image bgr8: image + fitted models)
              /perception/markers (visualization_msgs/MarkerArray: 3D cube and box for RViz)
+             /tf_static  base_link -> external_cam: the camera pose this node actually uses
+             (calibration or driver), optical frame (REP-103: z forward, x right, y down)
 
 Method (see vision.py): mask (HSV thresholds, or YOLO-seg with detector:=yolo), then fit of a box of known size lying on the
 table so that its projection matches the silhouette -> position + yaw, robust
@@ -28,12 +30,13 @@ import numpy as np
 import rclpy
 import rclpy.node
 from cv_bridge import CvBridge, CvBridgeError
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, TransformStamped
 from rcl_interfaces.msg import ParameterType
 from rcl_interfaces.srv import GetParameters
 from rclpy.executors import ExternalShutdownException
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image
+from tf2_ros import StaticTransformBroadcaster
 from visualization_msgs.msg import Marker, MarkerArray
 
 from so101_perception import vision
@@ -46,6 +49,19 @@ def _valid_transform(T):
     R = T[:3, :3]
     return (np.all(np.isfinite(T)) and np.allclose(T[3], [0, 0, 0, 1])
             and np.allclose(R.T @ R, np.eye(3), atol=1e-5) and np.isclose(np.linalg.det(R), 1.0, atol=1e-5))
+
+
+def _quaternion(R):
+    """Rotation matrix -> (x, y, z, w), normalised, w >= 0."""
+    w = np.sqrt(max(0.0, 1.0 + R[0, 0] + R[1, 1] + R[2, 2])) / 2
+    x = np.sqrt(max(0.0, 1.0 + R[0, 0] - R[1, 1] - R[2, 2])) / 2
+    y = np.sqrt(max(0.0, 1.0 - R[0, 0] + R[1, 1] - R[2, 2])) / 2
+    z = np.sqrt(max(0.0, 1.0 - R[0, 0] - R[1, 1] + R[2, 2])) / 2
+    x = np.copysign(x, R[2, 1] - R[1, 2])
+    y = np.copysign(y, R[0, 2] - R[2, 0])
+    z = np.copysign(z, R[1, 0] - R[0, 1])
+    q = np.array([x, y, z, w])
+    return q / np.linalg.norm(q)
 
 
 def _valid_K(K):
@@ -86,6 +102,10 @@ class PerceptionNode(rclpy.node.Node):
         self._period = 1.0 / publish_hz
         self._min_score = float(self.declare_parameter("min_score", vision.MIN_SCORE).value)
         self._frame = self.declare_parameter("output_frame", "base_link").value
+        # child frame of the camera TF; the frame_id of the images wins if they carry one
+        self._camera_frame = self.declare_parameter("camera_frame", "external_cam").value
+        self._tf_static = StaticTransformBroadcaster(self)
+        self._tf_sent = None    # (parent, child, T) of the last TF published
         self._segmenter = self._make_segmenter(
             self.declare_parameter("detector", "hsv").value,
             self.declare_parameter("yolo_weights", "").value)
@@ -179,11 +199,36 @@ class PerceptionNode(rclpy.node.Node):
     def _rebuild_camera(self):
         if self._K is not None and self._T is not None:
             self._camera = vision.Camera(self._K, self._T, self._D, axes=self._axes, size=self._size)
+            self._publish_camera_tf()
+
+    def _publish_camera_tf(self):
+        """Static TF output_frame -> camera optical frame, from the pose used by the detection."""
+        if self._camera is None:
+            return
+        T = self._camera.T  # camera (OpenCV axes) -> robot
+        sent = (self._frame, self._camera_frame, T)
+        if self._tf_sent is not None and self._tf_sent[:2] == sent[:2] and np.allclose(self._tf_sent[2], T):
+            return
+        msg = TransformStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self._frame
+        msg.child_frame_id = self._camera_frame
+        t = msg.transform.translation
+        t.x, t.y, t.z = (float(v) for v in T[:3, 3])
+        r = msg.transform.rotation
+        r.x, r.y, r.z, r.w = (float(v) for v in _quaternion(T[:3, :3]))
+        self._tf_static.sendTransform(msg)
+        self._tf_sent = sent
+        self.get_logger().info(f"TF {self._frame} -> {self._camera_frame}: camera at "
+                               f"{np.round(T[:3, 3], 3).tolist()} m ({'calibration' if self._from_file else 'driver'})")
 
     # ------------------------------------------------------------ images
 
     def _cb_image(self, msg: Image):
         now = time.monotonic()
+        if msg.header.frame_id and msg.header.frame_id != self._camera_frame:
+            self._camera_frame = msg.header.frame_id
+            self._publish_camera_tf()
         if self._camera is None or now - self._last_publish < self._period:
             return
         if self._size and (msg.width, msg.height) != tuple(self._size):
