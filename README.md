@@ -263,7 +263,7 @@ instruments live; it is distilled from Demucs separations of songs in a folder. 
 adding songs (only new songs are processed):
 ```bash
 uv run --no-project --python 3.12 --with demucs --with torchaudio --with mediapipe --with numpy \
-  python tools/train_vocal_model.py --songs ~/Desktop/Anime/music
+  python tools/train_vocal_model.py --songs /path/to/your/music
 ```
 
 ### Offline dance to a file (pre-checked, no live analysis)
