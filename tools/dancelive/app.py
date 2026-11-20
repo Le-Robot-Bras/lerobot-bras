@@ -17,6 +17,7 @@ from .choreo import Dancer
 from .genre import open_genre
 from .latency import RunStats, StateDelay, bench_analyzer, budget_rows, lead_terms, output_delay, print_budget, reactive_total
 from .moves import ALL_MOVES, STYLES
+from .rosbridge import open_stream
 from .safety import ContactGuard, SafetyFilter
 from .state import SECTIONS
 from .vocals import VocalFusion, open_vocals
@@ -372,18 +373,20 @@ def run_live(args):
     twin = open_twin(args, start=start if args.real else BASE)
     if twin is None and not args.real and not args.headless:
         raise SystemExit("--sim needs the view (mujoco + opencv), or --headless")
+    ros = open_stream(args)
     stop = threading.Event()
     lagged = {"n": 0}
+    styles = {"style": "", "genre": ""}
 
     def out(q, label):
-        if arm is None:
-            if twin is not None:
-                twin.update(q, None, label)
-            return
-        arm.send(q)
-        p = arm.read()
+        p = None
+        if arm is not None:
+            arm.send(q)
+            p = arm.read()
         if twin is not None:
             twin.update(q, p, label)
+        if ros is not None:
+            ros.update(q, p, label, styles["style"], styles["genre"])
         return p
 
     try:
@@ -429,6 +432,7 @@ def run_live(args):
             q, st, info = ctl.tick(ts, tick, now)
             if twin is not None:
                 twin.style_text, twin.genre_text = ctl.style_text, ctl.genre_text
+            styles["style"], styles["genre"] = ctl.style_text, ctl.genre_text
             p = out(q, ctl.label)
             late = time.monotonic() - next_tick
             ctl.late_max = max(ctl.late_max, late) if now - t0 > 2.0 else 0.0
@@ -494,4 +498,6 @@ def run_live(args):
         source.close()
         if twin is not None:
             twin.close()
+        if ros is not None:
+            ros.close()
 

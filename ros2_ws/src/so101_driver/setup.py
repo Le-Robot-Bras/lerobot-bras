@@ -19,6 +19,7 @@ setup(
     entry_points={
         "console_scripts": [
             "driver = so101_driver.driver_node:main",
+            "dance_bridge = so101_driver.dance_bridge:main",
         ],
     },
 )

@@ -133,6 +133,10 @@ def build_parser():
                    help="run every move through dance.py's limit/speed/collision checks at 130 bpm and exit")
     p.add_argument("--view", action=argparse.BooleanOptionalAction, default=True, help="live twin in the browser")
     p.add_argument("--view-port", type=int, default=8011)
+    p.add_argument("--ros-bridge", action="store_true",
+                   help="serve the dance state for ROS 2 / RViz (ros2 run so101_driver dance_bridge in Docker)")
+    p.add_argument("--ros-bridge-host", default="127.0.0.1")
+    p.add_argument("--ros-bridge-port", type=int, default=5600)
     p.add_argument("--view-wait", type=float, default=2.0, help="--sim: s before the audio starts")
     p.add_argument("--headless", action="store_true", help="--sim without the twin (status lines only)")
     p.add_argument("--verbose", action="store_true", help="--fast: a status line every second")
