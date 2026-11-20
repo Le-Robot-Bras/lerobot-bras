@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "so101-core"
-version = "0.1.0"
+version = "0.1.2"
 description = "Minimal Feetech/SO-ARM101 driver (extracted from LeRobot, Apache-2.0) — Tek5 Epitech module"
 requires-python = ">=3.10"
 dependencies = [
