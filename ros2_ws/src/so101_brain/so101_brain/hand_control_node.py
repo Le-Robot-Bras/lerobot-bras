@@ -8,6 +8,7 @@ Gestures (from /hand/fingers_state + 3D palm on /hand/virtual_pose):
                   stop if the hand goes out of range
   - CLOSED_HAND : avoid the hand while respecting safe joint, table, and base
                   limits; stop calmly if cornered so the arm is never forced
+  - V_SIGN      : enter Rock-Paper-Scissors mode against the hand that made V_SIGN
 
 Subscribes to:
   - /hand/fingers_state (std_msgs/String JSON from hand_node)
@@ -15,7 +16,7 @@ Subscribes to:
   - /joint_states       (sensor_msgs/JointState from driver_node)
 
 Publishes:
-  - /joint_command      (sensor_msgs/JointState, arm joints in radians)
+  - /joint_command      (sensor_msgs/JointState, arm joints in rad + optional gripper %)
 """
 from enum import Enum, auto
 import json
@@ -32,6 +33,8 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
+
+from so101_brain.rps_game import RockPaperScissorsGame, RpsConfig, RpsPhase
 
 ARM_JOINT_NAMES = [
     "shoulder_pan",
@@ -94,6 +97,7 @@ class ControlMode(Enum):
     CLOSED_AVOIDING = auto()
     CLOSED_SAFE = auto()
     CLOSED_CORNERED = auto()
+    RPS_MODE = auto()
 
 
 _OPEN_MODES = (
@@ -140,6 +144,12 @@ class HandControlNode(Node):
         self._rearm_timeout_s = float(self.declare_parameter("rearm_timeout_s", 0.8).value)
         self._max_cmd_lead_rad = float(self.declare_parameter("max_cmd_lead_rad", 0.15).value)
 
+        # Rock-Paper-Scissors trigger & timing parameters.
+        self._rps_v_sign_hold_s = float(self.declare_parameter("rps_v_sign_hold_s", 0.35).value)
+        rps_beat_duration_s = float(self.declare_parameter("rps_beat_duration_s", 1.20).value)
+        rps_stance_hold_s = float(self.declare_parameter("rps_stance_hold_s", 1.5).value)
+        self._rps_cooldown_s = float(self.declare_parameter("rps_cooldown_s", 1.0).value)
+
         urdf = Path(get_package_share_directory("so101_description")) / "urdf" / "so101.urdf"
         self._model = pinocchio.buildModelFromUrdf(str(urdf))
         self._data = self._model.createData()
@@ -184,6 +194,21 @@ class HandControlNode(Node):
         self._ik_cache: tuple[np.ndarray, np.ndarray | None] | None = None
         self._avoid_pan_pref: float = 0.0
 
+        # Rock-Paper-Scissors game instance and trigger tracking.
+        self._rps = RockPaperScissorsGame(
+            config=RpsConfig(
+                beat_duration_s=rps_beat_duration_s,
+                stance_hold_s=rps_stance_hold_s,
+            ),
+            solve_height_pose=self._solve_rps_height_pose,
+            log=self.get_logger().info,
+        )
+        self._v_sign_since: float | None = None
+        self._v_sign_hand_label: str | None = None
+        self._rps_cooldown_until: float = 0.0
+        self._rps_straight_seed: tuple[float, float] = (0.0, 0.0)
+        self._rps_lookup_seed: tuple[float, float] = (1.2, -1.2)
+
         # Dispatch table from detected gesture name to pattern handler.
         self._gesture_patterns = {
             "POINTING": self._pattern_straight_up,
@@ -200,7 +225,7 @@ class HandControlNode(Node):
 
         self.get_logger().info(
             "Hand control node ready (POINTING=up, OK_SIGN=default, "
-            "OPEN_HAND=touch+lookup, CLOSED_HAND=avoid)."
+            "OPEN_HAND=touch+lookup, CLOSED_HAND=avoid, V_SIGN=rps)."
         )
 
     def _cb_joint_states(self, msg: JointState) -> None:
@@ -252,6 +277,60 @@ class HandControlNode(Node):
 
         if not isinstance(hands, list):
             return
+
+        now = time.monotonic()
+        pose_fresh = (
+            self._hand_pose is not None
+            and (now - self._hand_pose_time) <= self._pose_timeout_s
+        )
+
+        if self._mode == ControlMode.RPS_MODE:
+            for hand_data in hands:
+                if isinstance(hand_data, dict) and hand_data.get("gesture") == "OK_SIGN":
+                    self._rps.reset()
+                    self._reset_interactive_mode()
+                    self._active_pattern = "OK_SIGN"
+                    self.get_logger().info("RPS aborted by OK_SIGN; returning to default pose.")
+                    self._pattern_original_position(hand_data)
+                    return
+            self._rps.update_hands(hands, self._hand_pose, pose_fresh, now)
+            return
+
+        v_sign_match = next(
+            (
+                (idx, hd)
+                for idx, hd in enumerate(hands)
+                if isinstance(hd, dict) and hd.get("gesture") == "V_SIGN"
+            ),
+            None,
+        )
+        if v_sign_match is not None and now >= self._rps_cooldown_until:
+            v_idx, v_hand = v_sign_match
+            v_label = str(v_hand.get("hand", "Unknown"))
+            if self._v_sign_since is None or self._v_sign_hand_label != v_label:
+                self._v_sign_since = now
+                self._v_sign_hand_label = v_label
+            elif (now - self._v_sign_since) >= self._rps_v_sign_hold_s:
+                self._reset_interactive_mode()
+                self._mode = ControlMode.RPS_MODE
+                self._active_pattern = "V_SIGN"
+                self._mode_start_time = now
+                self._cmd_q = self._q_measured.copy() if self._q_measured is not None else None
+                self._v_sign_since = None
+                self._v_sign_hand_label = None
+                self._rps_straight_seed = (0.0, 0.0)
+                self._rps_lookup_seed = (1.2, -1.2)
+                initial_z = (
+                    float(self._hand_pose[2])
+                    if (v_idx == 0 and pose_fresh and self._hand_pose is not None)
+                    else None
+                )
+                self._rps.start(v_label, now, initial_z=initial_z)
+                self._rps.update_hands(hands, self._hand_pose, pose_fresh, now)
+                return
+        else:
+            self._v_sign_since = None
+            self._v_sign_hand_label = None
 
         for idx, hand_data in enumerate(hands):
             if not isinstance(hand_data, dict):
@@ -345,15 +424,102 @@ class HandControlNode(Node):
         self._avoid_pan_pref = 0.0
 
     def _control_step(self) -> None:
-        """Periodic 20 Hz loop driving OPEN_HAND touch and CLOSED_HAND avoidance."""
+        """Periodic 20 Hz loop driving OPEN_HAND, CLOSED_HAND, and RPS_MODE."""
         if self._mode == ControlMode.IDLE or self._q_measured is None:
             return
 
         now = time.monotonic()
-        if self._mode in _OPEN_MODES:
+        if self._mode == ControlMode.RPS_MODE:
+            self._step_rps_mode(now)
+        elif self._mode in _OPEN_MODES:
             self._step_open_hand_mode(now)
         elif self._mode in _CLOSED_MODES:
             self._step_closed_hand_mode(now)
+
+    # ------------------------------------------------------------------ RPS_MODE
+
+    def _step_rps_mode(self, now: float) -> None:
+        """Advance Rock-Paper-Scissors mode and command arm + gripper smoothly."""
+        assert self._q_measured is not None
+        cmd = self._rps.step(now)
+        if cmd is None or self._rps.phase == RpsPhase.FINISHED:
+            self._rps_cooldown_until = now + self._rps_cooldown_s
+            self._rps.reset()
+            self._reset_interactive_mode()
+            self._active_pattern = None
+            return
+
+        self._ensure_cmd_q_bounded()
+        assert self._cmd_q is not None
+        q_target = self._cmd_q.copy()
+        for name, val in cmd.joints.items():
+            if name in self._idx_q:
+                q_target[self._idx_q[name]] = float(val)
+        q_target = np.clip(
+            q_target, self._model.lowerPositionLimit, self._model.upperPositionLimit
+        )
+        self._cmd_q = self._step_arm_joints(
+            self._cmd_q, q_target, cmd.speed_rad_s * self._dt
+        )
+        self._send_joint_command(
+            self._q_to_arm_dict(self._cmd_q), gripper_pct=cmd.gripper_pct
+        )
+
+    def _solve_rps_height_pose(self, target_z: float, look_up: bool) -> dict[str, float]:
+        """Solve (shoulder_lift, elbow_flex, wrist_flex) to match target_z cleanly."""
+        sl_idx = self._idx_q["shoulder_lift"]
+        ef_idx = self._idx_q["elbow_flex"]
+        wf_idx = self._idx_q["wrist_flex"]
+        sl_lo = float(self._model.lowerPositionLimit[sl_idx]) + 0.05
+        sl_hi = float(self._model.upperPositionLimit[sl_idx]) - 0.05
+        ef_lo = float(self._model.lowerPositionLimit[ef_idx]) + 0.05
+        ef_hi = float(self._model.upperPositionLimit[ef_idx]) - 0.05
+        wf_lo = float(self._model.lowerPositionLimit[wf_idx])
+        wf_hi = float(self._model.upperPositionLimit[wf_idx])
+
+        pitch = -math.pi / 2.0 if look_up else 0.0
+        target_x = 0.32 if look_up else 0.31
+        # With the gripper pointing straight up (+0.16 m above wrist), z < 0.22 m would push the wrist into the table.
+        target_z = float(np.clip(target_z, 0.22 if look_up else 0.10, 0.35))
+        sl, ef = self._rps_lookup_seed if look_up else self._rps_straight_seed
+        q_tmp = pinocchio.neutral(self._model)
+
+        def tcp_xz(sl_val: float, ef_val: float) -> np.ndarray:
+            q_tmp[sl_idx] = sl_val
+            q_tmp[ef_idx] = ef_val
+            q_tmp[wf_idx] = float(np.clip(pitch - (sl_val + ef_val), wf_lo, wf_hi))
+            p = self._forward_kinematics(q_tmp).translation
+            return np.array([float(p[0]), float(p[2])], dtype=float)
+
+        eps = 1e-4
+        for _ in range(50):
+            p = tcp_xz(sl, ef)
+            err = np.array([target_x - p[0], target_z - p[1]], dtype=float)
+            if float(np.linalg.norm(err)) < 1e-3:
+                break
+            jac = np.column_stack(
+                [
+                    (tcp_xz(sl + eps, ef) - p) / eps,
+                    (tcp_xz(sl, ef + eps) - p) / eps,
+                ]
+            )
+            dq = jac.T @ np.linalg.solve(jac @ jac.T + 1e-3 * np.eye(2), err)
+            dq = np.clip(dq, -0.15, 0.15)
+            sl = float(np.clip(sl + dq[0], sl_lo, sl_hi))
+            ef = float(np.clip(ef + dq[1], ef_lo, ef_hi))
+
+        if look_up:
+            self._rps_lookup_seed = (sl, ef)
+        else:
+            self._rps_straight_seed = (sl, ef)
+        wf = float(np.clip(pitch - sl - ef, wf_lo, wf_hi))
+        return {
+            "shoulder_pan": 0.0,
+            "shoulder_lift": sl,
+            "elbow_flex": ef,
+            "wrist_flex": wf,
+            "wrist_roll": 0.0,
+        }
 
     # ------------------------------------------------------------------ OPEN_HAND
 
@@ -794,8 +960,10 @@ class HandControlNode(Node):
         """Convert a Pinocchio configuration vector into an arm joint dictionary."""
         return {name: float(q[self._idx_q[name]]) for name in ARM_JOINT_NAMES}
 
-    def _send_joint_command(self, target_joints: dict[str, float]) -> None:
-        """Publish an arm JointState command (rad) to /joint_command."""
+    def _send_joint_command(
+        self, target_joints: dict[str, float], gripper_pct: float | None = None
+    ) -> None:
+        """Publish an arm JointState command (rad) and optional gripper (0-100 %) to /joint_command."""
         self._original_pose_captured = True
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -808,6 +976,9 @@ class HandControlNode(Node):
                 np.clip(val, self._model.lowerPositionLimit[idx], self._model.upperPositionLimit[idx])
             )
             positions.append(val)
+        if gripper_pct is not None:
+            msg.name.append("gripper")
+            positions.append(float(np.clip(gripper_pct, 0.0, 100.0)))
         msg.position = positions
         self._pub_command.publish(msg)
 
@@ -823,7 +994,6 @@ def main(args=None):
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
-
 
 if __name__ == "__main__":
     main()

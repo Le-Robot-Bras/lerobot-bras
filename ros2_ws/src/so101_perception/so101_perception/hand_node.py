@@ -43,6 +43,8 @@ FINGER_CHAINS = {
 
 PALM_BRIDGES = [(5, 9), (9, 13), (13, 17), (0, 5), (0, 17)]
 PALM_LANDMARKS = (0, 5, 9, 13, 17)
+# Rigid palm segments (wrist->MCPs + knuckle width) unaffected by finger curl
+PALM_SPAN_EDGES = ((0, 5), (0, 9), (0, 13), (0, 17), (5, 17))
 
 GESTURE_COLORS = {
     "OPEN_HAND":     (0, 255, 0),
@@ -235,11 +237,20 @@ class HandNode(Node):
             # Convert all 21 normalized landmarks to pixel coordinates
             pts = [(int(lm.x * w), int(lm.y * h)) for lm in hand_lms]
 
-            # Palm center & bounding box
+            # Palm center, tilt-compensated 3D palm span (px), & bounding box
             avg_x = sum(hand_lms[idx].x for idx in PALM_LANDMARKS) / len(PALM_LANDMARKS)
             avg_y = sum(hand_lms[idx].y for idx in PALM_LANDMARKS) / len(PALM_LANDMARKS)
             avg_z = sum(hand_lms[idx].z for idx in PALM_LANDMARKS) / len(PALM_LANDMARKS)
             palm_px = [int(avg_x * w), int(avg_y * h)]
+            palm_px_f = [round(avg_x * w, 2), round(avg_y * h, 2)]
+            palm_span_px = sum(
+                math.sqrt(
+                    ((hand_lms[a].x - hand_lms[b].x) * w) ** 2
+                    + ((hand_lms[a].y - hand_lms[b].y) * h) ** 2
+                    + ((hand_lms[a].z - hand_lms[b].z) * w) ** 2
+                )
+                for a, b in PALM_SPAN_EDGES
+            ) / len(PALM_SPAN_EDGES)
             palm_norm = [round(avg_x, 3), round(avg_y, 3), round(avg_z, 3)]
             wrist_px = list(pts[0])
 
@@ -348,6 +359,8 @@ class HandNode(Node):
                 "fingers": finger_states,
                 "count": sum(finger_states.values()),
                 "palm_px": palm_px,
+                "palm_px_f": palm_px_f,
+                "palm_span_px": round(palm_span_px, 2),
                 "palm_norm": palm_norm,
                 "wrist_px": wrist_px,
                 "bbox_px": bbox_px,

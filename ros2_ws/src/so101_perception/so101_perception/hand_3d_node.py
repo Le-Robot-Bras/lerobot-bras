@@ -86,22 +86,38 @@ class Hand3DVizNode(Node):
             self.declare_parameter("hand_ball_diameter", 0.055).value
         )
 
-        # ArUco world-anchor parameters
+        # ArUco world-anchor & wrist-tag parameters
         self._palm_to_marker_ratio = float(
             self.declare_parameter("palm_to_marker_ratio", 1.2).value
         )
+        self._palm_size_m = float(self.declare_parameter("palm_size_m", 0.083).value)
+        self._depth_smoothing_alpha = _clamp(
+            float(self.declare_parameter("depth_smoothing_alpha", 0.25).value), 0.01, 1.0
+        )
         self._aruco_gain = float(self.declare_parameter("aruco_gain", 1.0).value)
         self._use_full_6dof_rotation = bool(
-            self.declare_parameter("use_full_6dof_rotation", False).value
+            self.declare_parameter("use_full_6dof_rotation", True).value
         )
+        self._clamp_aruco_to_workspace = bool(
+            self.declare_parameter("clamp_aruco_to_workspace", False).value
+        )
+        self._floor_z_m = float(self.declare_parameter("floor_z_m", 0.0).value)
         self._invert_depth_x = bool(self.declare_parameter("invert_depth_x", False).value)
+        self._use_wrist_aruco = bool(self.declare_parameter("use_wrist_aruco", True).value)
+        self._wrist_aruco_timeout_s = float(
+            self.declare_parameter("wrist_aruco_timeout_s", 0.35).value
+        )
 
         self._smoothed_pos: dict[str, tuple[float, float, float]] = {}
+        self._smoothed_z_cam: dict[str, float] = {}
         self._last_seen: dict[str, float] = {}
         self._active_hand_marker_keys: set[tuple[str, int]] = set()
         self._single_marker_active = False
         self._aruco_anchor: dict | None = None
+        self._last_wrist_anchor_time = 0.0
         self._last_aruco_status: tuple[bool, bool] | None = None
+        self._calibrated_palm_size_m: float | None = None
+        self._using_wrist_depth: bool | None = None
 
         self.create_subscription(String, "/hand/fingers_state", self._cb_fingers_state, 10)
         self.create_subscription(String, "/aruco/anchor_state", self._cb_anchor_state, 10)
@@ -115,9 +131,9 @@ class Hand3DVizNode(Node):
 
         self.get_logger().info(
             f"3D hand visualizer ready (frame={self._frame_id}, "
-            f"x=[{self._x_min}, {self._x_max}], "
-            f"y=[{self._y_min}, {self._y_max}], "
-            f"z=[{self._z_min}, {self._z_max}])"
+            f"6dof={self._use_full_6dof_rotation}, "
+            f"use_wrist_aruco={self._use_wrist_aruco}, "
+            f"clamp_aruco={self._clamp_aruco_to_workspace})"
         )
 
     def _cb_anchor_state(self, msg: String):
@@ -129,6 +145,9 @@ class Hand3DVizNode(Node):
         if not isinstance(data, dict):
             return
         self._aruco_anchor = data
+        if data.get("wrist_detected") and data.get("t_cam_wrist"):
+            self._last_wrist_anchor_time = time.monotonic()
+
         status = (bool(data.get("locked")), bool(data.get("detected")))
         if status != self._last_aruco_status:
             self._last_aruco_status = status
@@ -155,14 +174,46 @@ class Hand3DVizNode(Node):
             return False
         return float(K[0][0]) > 0.0 and float(K[1][1]) > 0.0 and float(t_cm[2]) > 0.0
 
+    def _wrist_depth_for_hand(
+        self, wrist_px: list, num_hands: int
+    ) -> float | None:
+        """Return ArUco ID 1 metric camera depth if freshly detected near this hand."""
+        if not self._use_wrist_aruco or not self._aruco_anchor:
+            return None
+        a = self._aruco_anchor
+        if not a.get("wrist_detected"):
+            return None
+        if (time.monotonic() - self._last_wrist_anchor_time) > self._wrist_aruco_timeout_s:
+            return None
+        t_cw = a.get("t_cam_wrist")
+        if not t_cw or len(t_cw) != 3 or float(t_cw[2]) <= 0.05:
+            return None
+
+        if num_hands > 1:
+            w_center = a.get("wrist_center_px")
+            w_side = float(a.get("wrist_side_px") or 40.0)
+            if w_center and len(w_center) == 2:
+                dist_px = math.hypot(
+                    float(wrist_px[0]) - float(w_center[0]),
+                    float(wrist_px[1]) - float(w_center[1]),
+                )
+                if dist_px > max(3.0 * w_side, 140.0):
+                    return None
+
+        return float(t_cw[2])
+
     def _project_palm_to_3d(
-        self, hand_key: str, palm_norm: list, palm_px: list, wrist_px: list
+        self,
+        hand_key: str,
+        palm_norm: list,
+        palm_px: list,
+        wrist_px: list,
+        palm_span_px: float | None = None,
+        wrist_z_cam: float | None = None,
     ) -> tuple[float, float, float]:
         """Project webcam palm coordinates to clamped & smoothed (x, y, z)."""
-        d_px = math.hypot(
-            float(palm_px[0]) - float(wrist_px[0]),
-            float(palm_px[1]) - float(wrist_px[1]),
-        )
+        u_px, v_px = float(palm_px[0]), float(palm_px[1])
+        d_px = math.hypot(u_px - float(wrist_px[0]), v_px - float(wrist_px[1]))
 
         x_lo, x_hi = min(self._x_min, self._x_max), max(self._x_min, self._x_max)
         y_lo, y_hi = min(self._y_min, self._y_max), max(self._y_min, self._y_max)
@@ -174,34 +225,84 @@ class Hand3DVizNode(Node):
             K = a["cam_K"]
             fx, cx = float(K[0][0]), float(K[0][2])
             fy, cy = float(K[1][1]), float(K[1][2])
+            f_avg = 0.5 * (fx + fy)
             tx_m, ty_m, tz_m = (float(v) for v in a["t_cam_marker"])
             mx, my, mz = (float(v) for v in a["marker_world_pos"])
             side_px = float(a["marker_side_px"])
 
-            d_px_ref = max(self._palm_to_marker_ratio * side_px, 15.0)
-            depth_ratio = (
-                _clamp(d_px_ref / max(d_px, 15.0), 0.35, 2.5)
-                if self._use_depth_estimation
-                else 1.0
+            using_wrist = wrist_z_cam is not None
+            if using_wrist != self._using_wrist_depth:
+                self._using_wrist_depth = using_wrist
+                if using_wrist:
+                    self.get_logger().info(
+                        f"Depth source switched to ArUco wrist ID 1 (z={wrist_z_cam:.3f}m)."
+                    )
+                else:
+                    self.get_logger().info(
+                        "Wrist ID 1 occluded; using calibrated MediaPipe palm depth."
+                    )
+
+            if wrist_z_cam is not None:
+                raw_z_cam = _clamp(wrist_z_cam, 0.10, 2.0)
+                if palm_span_px is not None and float(palm_span_px) > 15.0:
+                    est_palm_m = _clamp(raw_z_cam * float(palm_span_px) / f_avg, 0.045, 0.14)
+                    if self._calibrated_palm_size_m is None:
+                        self._calibrated_palm_size_m = est_palm_m
+                    else:
+                        self._calibrated_palm_size_m = (
+                            0.85 * self._calibrated_palm_size_m + 0.15 * est_palm_m
+                        )
+            elif self._use_depth_estimation:
+                if palm_span_px is not None and float(palm_span_px) > 1.0:
+                    eff_palm_m = self._calibrated_palm_size_m or self._palm_size_m
+                    raw_z_cam = _clamp(
+                        f_avg * eff_palm_m / max(float(palm_span_px), 15.0),
+                        0.12,
+                        2.0,
+                    )
+                else:
+                    d_px_ref = max(self._palm_to_marker_ratio * side_px, 15.0)
+                    raw_z_cam = _clamp(tz_m * (d_px_ref / max(d_px, 15.0)), 0.12, 2.0)
+            else:
+                raw_z_cam = tz_m
+
+            prev_z = self._smoothed_z_cam.get(hand_key)
+            if prev_z is None:
+                z_cam = raw_z_cam
+            elif wrist_z_cam is not None:
+                # Wrist ArUco z is already smoothed in aruco_node; track it snappily
+                z_cam = 0.65 * raw_z_cam + 0.35 * prev_z
+            else:
+                da = self._depth_smoothing_alpha
+                z_cam = da * raw_z_cam + (1.0 - da) * prev_z
+            self._smoothed_z_cam[hand_key] = z_cam
+
+            x_cam = (u_px - cx) / fx * z_cam
+            y_cam = (v_px - cy) / fy * z_cam
+
+            p_cam = (
+                tx_m + (x_cam - tx_m) * self._aruco_gain,
+                ty_m + (y_cam - ty_m) * self._aruco_gain,
+                tz_m + (z_cam - tz_m) * self._aruco_gain,
             )
-            z_cam = tz_m * depth_ratio
-            x_cam = (float(palm_px[0]) - cx) / fx * z_cam
-            y_cam = (float(palm_px[1]) - cy) / fy * z_cam
 
             T_wc = a.get("T_world_cam")
             if self._use_full_6dof_rotation and T_wc and len(T_wc) == 4:
-                raw_x, raw_y, raw_z = _transform_point(T_wc, (x_cam, y_cam, z_cam))
+                raw_x, raw_y, raw_z = _transform_point(T_wc, p_cam)
             else:
-                dx_cam = (x_cam - tx_m) * self._aruco_gain
-                dy_cam = (y_cam - ty_m) * self._aruco_gain
-                dz_cam = (z_cam - tz_m) * self._aruco_gain
+                dx_cam, dy_cam, dz_cam = p_cam[0] - tx_m, p_cam[1] - ty_m, p_cam[2] - tz_m
                 raw_x = (mx + dz_cam) if self._invert_depth_x else (mx - dz_cam)
                 raw_y = my + (-dx_cam if self._mirror_y else dx_cam)
                 raw_z = mz + (-dy_cam)
 
-            x_lo, x_hi = min(x_lo, mx), max(x_hi, mx)
-            y_lo, y_hi = min(y_lo, my), max(y_hi, my)
-            z_lo, z_hi = min(z_lo, mz), max(z_hi, mz)
+            if self._clamp_aruco_to_workspace:
+                x_lo, x_hi = min(x_lo, mx), max(x_hi, mx)
+                y_lo, y_hi = min(y_lo, my), max(y_hi, my)
+                z_lo, z_hi = min(z_lo, mz), max(z_hi, mz)
+            else:
+                x_lo, x_hi = -2.0, 2.0
+                y_lo, y_hi = -2.0, 2.0
+                z_lo, z_hi = self._floor_z_m, 2.0
         else:
             nx = float(palm_norm[0])
             ny = float(palm_norm[1])
@@ -215,8 +316,8 @@ class Hand3DVizNode(Node):
 
             if self._use_depth_estimation:
                 img_h = (
-                    (float(palm_px[1]) / ny)
-                    if (ny > 0.05 and float(palm_px[1]) > 0.0)
+                    (v_px / ny)
+                    if (ny > 0.05 and v_px > 0.0)
                     else 480.0
                 )
                 scale = d_px / max(img_h, 1.0)
@@ -258,9 +359,9 @@ class Hand3DVizNode(Node):
     def _build_aruco_square_markers(self, stamp) -> list[Marker]:
         """Build RViz square markers representing the physical ArUco marker on the desk."""
         a = self._aruco_anchor or {}
-        size = float(a.get("marker_size_m", 0.05))
+        size = float(a.get("marker_size_m", 0.10))
         mx, my, mz = (float(v) for v in a.get("marker_world_pos", [0.51, 0.0, 0.0]))
-        yaw = math.radians(float(a.get("marker_yaw_deg", 0.0)))
+        yaw = math.radians(float(a.get("marker_yaw_deg", 90.0)))
         detected = bool(a.get("detected", False))
         locked = bool(a.get("locked", False))
 
@@ -341,7 +442,7 @@ class Hand3DVizNode(Node):
 
         for idx, hand in enumerate(hands):
             palm_norm = hand.get("palm_norm")
-            palm_px = hand.get("palm_px")
+            palm_px = hand.get("palm_px_f") or hand.get("palm_px")
             wrist_px = hand.get("wrist_px")
             if (
                 not palm_norm
@@ -358,11 +459,20 @@ class Hand3DVizNode(Node):
             seen_labels[label] = occ + 1
             hand_key = label if occ == 0 else f"{label}_{occ}"
 
-            px, py, pz = self._project_palm_to_3d(hand_key, palm_norm, palm_px, wrist_px)
+            palm_span_px = hand.get("palm_span_px")
+            wrist_z_cam = self._wrist_depth_for_hand(wrist_px, len(hands))
+            px, py, pz = self._project_palm_to_3d(
+                hand_key,
+                palm_norm,
+                palm_px,
+                wrist_px,
+                float(palm_span_px) if palm_span_px is not None else None,
+                wrist_z_cam=wrist_z_cam,
+            )
             gesture = str(hand.get("gesture", "PARTIAL"))
             r, g, b = GESTURE_COLORS_RGB.get(gesture, (0.25, 0.70, 1.00))
 
-            # hand indicator
+            # Colored ball for the hand
             ball = self._base_marker(stamp, "virtual_hand_ball", idx, Marker.SPHERE)
             ball.pose.position = _make_point(px, py, pz)
             ball.scale.x = self._hand_ball_diameter
@@ -428,6 +538,7 @@ class Hand3DVizNode(Node):
         for k in stale_keys:
             self._last_seen.pop(k, None)
             self._smoothed_pos.pop(k, None)
+            self._smoothed_z_cam.pop(k, None)
 
         if tf_transforms:
             self._tf_broadcaster.sendTransform(tf_transforms)
